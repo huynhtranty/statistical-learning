@@ -1,0 +1,92 @@
+# --- Byte-compiled / optimized / DLL files ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Distribution / packaging ---
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual environments ---
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Testing / coverage ---
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# --- Jupyter / notebooks ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- ML / experiment tracking ---
+wandb/
+runs/
+mlruns/
+lightning_logs/
+*.log
+
+# --- Model weights (use Git LFS if needed) ---
+weights/*.pt
+weights/*.pth
+weights/*.onnx
+weights/*.engine
+weights/*.safetensors
+!weights/.gitkeep
+
+# --- Datasets (do not commit raw or processed images) ---
+data/raw/*
+!data/raw/.gitkeep
+data/processed/images/**/*
+!data/processed/images/train/
+!data/processed/images/val/
+!data/processed/images/test/
+!data/processed/images/train/.gitkeep
+!data/processed/images/val/.gitkeep
+!data/processed/images/test/.gitkeep
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Misc ---
+*.bak
+*.tmp
