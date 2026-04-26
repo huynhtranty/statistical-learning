@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Object Detection Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin-bottom: 0.25rem; }
+    .sub { color: #666; margin-top: 0; }
+    form { margin: 1.5rem 0; padding: 1rem; border: 1px dashed #aaa; border-radius: 8px; }
+    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+    pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+    img { max-width: 100%; margin-top: 1rem; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Object Detection Demo</h1>
+  <p class="sub">Upload an image to run it through the trained detector.</p>
+
+  <form id="upload-form">
+    <input type="file" id="image-input" name="image" accept="image/*" required />
+    <button type="submit">Detect</button>
+  </form>
+
+  <div id="preview"></div>
+  <h3>Result</h3>
+  <pre id="result">Awaiting upload...</pre>
+
+  <script>
+    const API = "http://localhost:8000/predict";
+    const form = document.getElementById("upload-form");
+    const input = document.getElementById("image-input");
+    const result = document.getElementById("result");
+    const preview = document.getElementById("preview");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const file = input.files[0];
+      if (!file) return;
+
+      preview.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = URL.createObjectURL(file);
+      preview.appendChild(img);
+
+      result.textContent = "Running inference...";
+      const fd = new FormData();
+      fd.append("image", file);
+
+      try {
+        const res = await fetch(API, { method: "POST", body: fd });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        result.textContent = JSON.stringify(json, null, 2);
+      } catch (err) {
+        result.textContent = `Error: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
