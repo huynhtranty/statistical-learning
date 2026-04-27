@@ -1,41 +1,48 @@
-# YOLO
+# YOLO (You Only Look Once)
 
-One-stage detector via [Ultralytics YOLOv8](https://docs.ultralytics.com/). Selected as the **one-stage / real-time** representative — designed for high FPS and a strong accuracy/latency tradeoff.
+## Mô tả
 
-## Model variant
+YOLO là mô hình **one-stage detector** nổi tiếng với tốc độ inference nhanh.
+Kiến trúc này là phiên bản đơn giản hoá, gồm 3 phần chính:
 
-`yolov8n` (nano) by default — light enough for CPU inference in the web app demo. Switch to `yolov8s` / `yolov8m` in `config.yaml` for higher mAP at the cost of FPS.
+1. **Backbone** (DarkNet-style với CSP blocks): trích xuất feature ở 3 scale.
+2. **Neck** (FPN-style): kết hợp feature map từ nhiều scale.
+3. **Detection Head**: dự đoán bounding box, objectness score, và class logits.
 
-## Training
+## Cấu trúc file
+
+| File | Mô tả |
+|------|-------|
+| `model.py` | Hàm `build_yolo()` — ghép backbone + neck + head thành model hoàn chỉnh |
+| `backbone.py` | `YOLOBackbone` — trích xuất feature map ở 3 scale (stride 8, 16, 32) |
+| `neck.py` | `YOLONeck` — FPN top-down pathway kết hợp feature |
+| `head.py` | `YOLODetectionHead` — dự đoán detection ở mỗi scale |
+| `train.py` | Script kiểm tra kiến trúc và skeleton cho training |
+| `config.yaml` | Cấu hình model cơ bản |
+| `__init__.py` | Export các class/hàm chính |
+
+## Cách chạy kiểm tra kiến trúc
 
 ```bash
-# 1. Convert COCO JSON to YOLO .txt labels (one-time)
-python scripts/convert_coco_to_yolo.py \
-    --coco data/processed/annotations/train.json \
-    --images data/processed/images/train \
-    --output data/processed/annotations/yolo/train
-
-# 2. Train
-python models/yolo/train.py \
-    --data data/processed \
-    --epochs 50 \
-    --batch-size 16 \
-    --output weights/yolo.pt
+# Từ thư mục gốc project (statistical-learning/)
+python models/yolo/train.py --num_classes 5
+python models/yolo/train.py --num_classes 5 --device cuda
 ```
 
-## Hyperparameters (see `config.yaml`)
+Script sẽ:
+- Build model YOLO (backbone + neck + head)
+- In ra số lượng tham số
+- Forward thử với ảnh dummy 640×640
+- In ra kích thước output ở mỗi scale
 
-| Param         | Value      |
-|---------------|------------|
-| Input size    | 640 x 640  |
-| Optimizer     | SGD (lr0 0.01, momentum 0.937, wd 5e-4) |
-| Epochs        | 50         |
-| Batch size    | 16         |
-| Mosaic aug    | enabled    |
-| Random seed   | 42         |
+## Các phần chưa làm
 
-## Expected output
-
-- Best checkpoint: `weights/yolo.pt`
-- Ultralytics logs and curves under `runs/yolo/exp/`
-- Final test-set evaluation runs through `evaluation/evaluate.py` for COCO mAP
+- [ ] Định nghĩa anchor sizes cụ thể
+- [ ] Decode predictions (chuyển raw output thành bounding box thật)
+- [ ] Non-Maximum Suppression (NMS)
+- [ ] Loss function hoàn chỉnh (objectness + cls + bbox)
+- [ ] DataLoader với annotations
+- [ ] Training loop
+- [ ] Pretrained backbone
+- [ ] Data augmentation (mosaic, mixup, v.v.)
+- [ ] Bottom-up pathway (PAN) trong Neck

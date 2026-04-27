@@ -1,60 +1,67 @@
-"""Train a YOLO object detector (Ultralytics implementation).
+"""Kiểm tra kiến trúc YOLO và skeleton cho training.
 
-Conventions (shared across all three models in this project):
-- Master annotation format: COCO JSON (converted to YOLO .txt for ultralytics)
-- Train/val/test split: identical for all models (see scripts/split_dataset.py)
-- Input resolution: 640 x 640
-- Random seed: 42
+Script này chủ yếu dùng để:
+- Kiểm tra model build thành công hay không.
+- Forward thử với dummy input.
+- In ra tóm tắt kiến trúc và kích thước output.
 
-Usage:
-    python models/yolo/train.py \
-        --data data/processed \
-        --epochs 50 \
-        --batch-size 16 \
-        --output weights/yolo.pt
+Phần training loop thật sẽ được triển khai sau.
+
+Cách chạy:
+    python models/yolo/train.py --num_classes 5
+    python models/yolo/train.py --num_classes 5 --device cuda
 """
 from __future__ import annotations
 
 import argparse
-import random
+import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
-SEED = 42
-INPUT_SIZE = 640
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from models.yolo.model import build_yolo
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train YOLO via ultralytics.")
-    p.add_argument("--data", type=Path, required=True, help="Processed data root.")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--batch-size", type=int, default=16)
-    p.add_argument("--output", type=Path, required=True, help="Output checkpoint path (.pt).")
-    p.add_argument("--config", type=Path, default=Path(__file__).with_name("config.yaml"))
+    p = argparse.ArgumentParser(description="Kiểm tra kiến trúc YOLO.")
+    p.add_argument("--num_classes", type=int, default=5,
+                    help="Số lớp vật thể (không tính background). Mặc định: 5.")
+    p.add_argument("--device", type=str, default="cpu",
+                    help="Thiết bị chạy model (cpu hoặc cuda). Mặc định: cpu.")
     return p.parse_args()
-
-
-def set_seed(seed: int = SEED) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def main() -> None:
     args = parse_args()
-    set_seed()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    # TODO: implement training
-    #   1. Ensure YOLO-format labels exist (run scripts/convert_coco_to_yolo.py first).
-    #   2. Build a temporary dataset YAML (path, train, val, names) for ultralytics.
-    #   3. from ultralytics import YOLO; model = YOLO("yolov8n.pt"); model.train(...)
-    #      with imgsz=INPUT_SIZE, seed=SEED, epochs/batch from args.
-    #   4. Move best.pt to args.output.
-    raise NotImplementedError("YOLO training: implement")
+    device = torch.device(args.device)
+
+    print(f"[YOLO] Đang build model với num_classes={args.num_classes}...")
+    model = build_yolo(num_classes=args.num_classes)
+    model.to(device)
+    model.eval()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[YOLO] Tổng tham số:       {total_params:,}")
+    print(f"[YOLO] Tham số trainable:   {trainable_params:,}")
+
+    # Forward thử với dummy input
+    dummy = torch.randn(1, 3, 640, 640, device=device)
+    with torch.no_grad():
+        outputs = model(dummy)
+
+    print(f"[YOLO] Forward thành công! Số scale output: {len(outputs)}")
+    for i, out in enumerate(outputs):
+        print(f"  Scale {i}: shape = {tuple(out.shape)}")
+
+    # TODO: Triển khai DataLoader với annotations (YOLO format hoặc COCO).
+    # TODO: Triển khai training loop (optimizer, scheduler, epoch loop).
+    # TODO: Triển khai decode predictions và NMS cho inference.
+    # TODO: Triển khai validation sau mỗi epoch.
+    # TODO: Lưu checkpoint tốt nhất.
+    print("\n[YOLO] Model build thành công. Training loop chưa được triển khai (xem TODO).")
 
 
 if __name__ == "__main__":

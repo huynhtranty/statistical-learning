@@ -1,40 +1,15 @@
-# Faster R-CNN training config
-# All three models share: input_size=640, seed=42, COCO JSON annotations.
+# Cấu hình kiến trúc Faster R-CNN
+# Chỉ chứa thông số model cơ bản. Cấu hình dataset/split sẽ thêm sau.
 
 model:
-  name: fasterrcnn_resnet50_fpn
-  backbone: resnet50
-  pretrained: true        # initialize from COCO-pretrained weights
+  model_name: fasterrcnn_resnet50_fpn
+  num_classes: 6            # 5 lớp vật thể + 1 background
+  image_size: 640
+  pretrained_backbone: true
   trainable_backbone_layers: 3
 
-data:
-  input_size: 640
-  num_classes: 6          # 5 foreground classes + 1 background — update if classes.txt changes
-  classes_file: data/processed/annotations/classes.txt
-  train_ann: data/processed/annotations/train.json
-  val_ann: data/processed/annotations/val.json
-  train_images: data/processed/images/train
-  val_images: data/processed/images/val
-
-train:
-  epochs: 50
-  batch_size: 8
-  num_workers: 4
-  seed: 42
-  optimizer:
-    name: SGD
-    lr: 0.005
-    momentum: 0.9
-    weight_decay: 0.0005
-  scheduler:
-    name: StepLR
-    step_size: 10
-    gamma: 0.1
-
-augmentation:
-  horizontal_flip: 0.5
-  color_jitter: 0.2
-
-logging:
-  print_freq: 50
-  save_dir: weights/
+# TODO: Thêm cấu hình anchor sizes/aspect ratios.
+# TODO: Thêm cấu hình RPN (nms_thresh, pre/post nms top_n, v.v.).
+# TODO: Thêm cấu hình ROI head (nms_thresh, score_thresh, v.v.).
+# TODO: Thêm cấu hình optimizer và scheduler khi triển khai training.
+# TODO: Thêm cấu hình dataset và data augmentation.
