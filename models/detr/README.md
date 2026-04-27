@@ -1,39 +1,52 @@
-# DETR
+# DETR (DEtection TRansformer)
 
-Transformer-based detector — [DEtection TRansformer](https://arxiv.org/abs/2005.12872) — via [HuggingFace Transformers](https://huggingface.co/docs/transformers/model_doc/detr). Selected as the **transformer / set-prediction** representative: removes the need for hand-designed components like NMS by predicting a fixed-size set of objects with bipartite matching.
+## Mô tả
 
-## Backbone
+DETR là mô hình **transformer-based detector** tiên phong, loại bỏ hoàn toàn
+các thành phần thủ công như anchor boxes và Non-Maximum Suppression (NMS).
 
-`facebook/detr-resnet-50` initialized from COCO-pretrained weights. Classification head is reinitialized to match our class count (`ignore_mismatched_sizes=True`).
+Kiến trúc gồm 4 phần chính:
 
-## Training
+1. **CNN Backbone** (ResNet-50): trích xuất feature map từ ảnh.
+2. **Transformer Encoder**: xử lý feature map kèm positional encoding.
+3. **Transformer Decoder**: dùng object queries để dự đoán set of objects.
+4. **Prediction Heads**: class head + bbox head cho mỗi query.
+
+Sử dụng Hungarian matching để ghép cặp 1-1 giữa predictions và ground truth.
+
+## Cấu trúc file
+
+| File | Mô tả |
+|------|-------|
+| `model.py` | Hàm `build_detr()` — ghép backbone + transformer + heads thành model hoàn chỉnh |
+| `backbone.py` | `DETRBackbone` — ResNet-50 + projection conv để trích xuất feature |
+| `transformer.py` | `DETRTransformer` — encoder-decoder + positional encoding 2D |
+| `matcher.py` | `HungarianMatcher` — ghép cặp predictions-targets bằng thuật toán Hungarian |
+| `train.py` | Script kiểm tra kiến trúc và skeleton cho training |
+| `config.yaml` | Cấu hình model cơ bản |
+| `__init__.py` | Export các class/hàm chính |
+
+## Cách chạy kiểm tra kiến trúc
 
 ```bash
-python models/detr/train.py \
-    --data data/processed \
-    --epochs 50 \
-    --batch-size 4 \
-    --output weights/detr.pth
+# Từ thư mục gốc project (statistical-learning/)
+python models/detr/train.py --num_classes 5
+python models/detr/train.py --num_classes 5 --num_queries 100 --device cuda
 ```
 
-Note: DETR is the most memory-hungry of the three — start with batch size 4 on a single GPU. Use gradient accumulation if needed.
+Script sẽ:
+- Build model DETR (backbone + transformer + heads)
+- In ra số lượng tham số
+- Forward thử với ảnh dummy 640×640
+- In ra kích thước output (pred_logits, pred_boxes)
 
-## Hyperparameters (see `config.yaml`)
+## Các phần chưa làm
 
-| Param         | Value      |
-|---------------|------------|
-| Input size    | 640 x 640  |
-| Optimizer     | AdamW      |
-| LR (transformer) | 1e-4   |
-| LR (backbone) | 1e-5       |
-| Scheduler     | StepLR (step 30, gamma 0.1) |
-| Epochs        | 50         |
-| Batch size    | 4          |
-| num_queries   | 100        |
-| Random seed   | 42         |
-
-## Expected output
-
-- Best checkpoint: `weights/detr.pth`
-- HuggingFace logs and curves under `runs/detr/exp/`
-- Final test-set evaluation runs through `evaluation/evaluate.py` for COCO mAP
+- [ ] DataLoader với COCO annotations
+- [ ] Training loop (AdamW, scheduler, gradient clipping)
+- [ ] Tích hợp SetCriterion (loss) với HungarianMatcher
+- [ ] Auxiliary loss (dự đoán ở mỗi decoder layer)
+- [ ] Validation sau mỗi epoch
+- [ ] Lưu checkpoint tốt nhất
+- [ ] Hỗ trợ backbone khác (ResNet-101, ResNeXt)
+- [ ] Load pretrained DETR từ HuggingFace

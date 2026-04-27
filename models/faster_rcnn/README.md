@@ -1,34 +1,44 @@
 # Faster R-CNN
 
-Two-stage detector (Region Proposal Network + classification/regression heads) implemented via [torchvision](https://pytorch.org/vision/stable/models/faster_rcnn.html). Selected as the **two-stage baseline** — historically the strongest accuracy class on COCO before transformer detectors caught up.
+## Mô tả
 
-## Backbone
+Faster R-CNN là mô hình **two-stage detector** kinh điển cho object detection:
 
-ResNet-50 + FPN, initialized from COCO-pretrained weights. The box predictor head is replaced to match our class count.
+1. **Region Proposal Network (RPN)** đề xuất các vùng có thể chứa vật thể.
+2. **ROI Head** phân loại lớp và tinh chỉnh bounding box cho từng vùng đề xuất.
 
-## Training
+Sử dụng ResNet-50 + FPN làm backbone, khởi tạo từ trọng số pretrained trên COCO.
+
+## Cấu trúc file
+
+| File | Mô tả |
+|------|-------|
+| `model.py` | Hàm `build_faster_rcnn()` — tạo mô hình với số lớp tuỳ chỉnh |
+| `backbone.py` | Hàm `build_backbone()` — tạo ResNet-50 + FPN backbone |
+| `train.py` | Script kiểm tra kiến trúc và skeleton cho training |
+| `config.yaml` | Cấu hình model cơ bản |
+| `__init__.py` | Export các hàm chính |
+
+## Cách chạy kiểm tra kiến trúc
 
 ```bash
-python models/faster_rcnn/train.py \
-    --data data/processed \
-    --epochs 50 \
-    --batch-size 8 \
-    --output weights/faster_rcnn.pth
+# Từ thư mục gốc project (statistical-learning/)
+python models/faster_rcnn/train.py --num_classes 6
+python models/faster_rcnn/train.py --num_classes 6 --device cuda
 ```
 
-## Hyperparameters (see `config.yaml`)
+Script sẽ:
+- Build model Faster R-CNN
+- In ra số lượng tham số
+- Forward thử với ảnh dummy 640×640
+- Báo kết quả thành công
 
-| Param         | Value      |
-|---------------|------------|
-| Input size    | 640 x 640  |
-| Optimizer     | SGD (lr 0.005, momentum 0.9, wd 5e-4) |
-| Scheduler     | StepLR (step 10, gamma 0.1)           |
-| Epochs        | 50         |
-| Batch size    | 8          |
-| Random seed   | 42         |
+## Các phần chưa làm
 
-## Expected output
-
-- Best checkpoint: `weights/faster_rcnn.pth`
-- Validation log printed each epoch
-- Final test-set evaluation runs through `evaluation/evaluate.py` for COCO mAP
+- [ ] DataLoader với COCO annotations
+- [ ] Training loop (optimizer, scheduler, epoch loop)
+- [ ] Validation sau mỗi epoch
+- [ ] Lưu checkpoint tốt nhất
+- [ ] Tuỳ chỉnh anchor sizes/aspect ratios
+- [ ] Data augmentation
+- [ ] Hỗ trợ backbone khác (ResNet-101, MobileNet, v.v.)

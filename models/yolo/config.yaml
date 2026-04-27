@@ -1,39 +1,15 @@
-# YOLO (Ultralytics) training config
-# All three models share: input_size=640, seed=42, COCO JSON annotations.
+# Cấu hình kiến trúc YOLO
+# Chỉ chứa thông số model cơ bản. Cấu hình dataset/split sẽ thêm sau.
 
 model:
-  name: yolov8n           # alternatives: yolov8s, yolov8m, yolov8l
-  pretrained: yolov8n.pt  # COCO-pretrained weights from ultralytics
+  model_name: yolo_custom
+  num_classes: 5            # Số lớp vật thể (không tính background)
+  image_size: 640
+  base_channels: 32         # Số kênh cơ sở (tăng để có model lớn hơn)
+  num_anchors: 3            # Số anchor mỗi vị trí grid
 
-data:
-  input_size: 640
-  classes_file: data/processed/annotations/classes.txt
-  # ultralytics requires a dataset YAML — generated at runtime by train.py
-  yolo_labels_train: data/processed/annotations/yolo/train
-  yolo_labels_val: data/processed/annotations/yolo/val
-  train_images: data/processed/images/train
-  val_images: data/processed/images/val
-
-train:
-  epochs: 50
-  batch_size: 16
-  num_workers: 4
-  seed: 42
-  optimizer: SGD
-  lr0: 0.01
-  lrf: 0.01               # final lr factor (lr_final = lr0 * lrf)
-  momentum: 0.937
-  weight_decay: 0.0005
-  warmup_epochs: 3.0
-
-augmentation:
-  mosaic: 1.0
-  mixup: 0.0
-  hsv_h: 0.015
-  hsv_s: 0.7
-  hsv_v: 0.4
-  fliplr: 0.5
-
-logging:
-  project: runs/yolo
-  name: exp
+# TODO: Định nghĩa anchor sizes cụ thể cho từng scale.
+# TODO: Thêm cấu hình NMS (iou_threshold, confidence_threshold).
+# TODO: Thêm cấu hình optimizer và scheduler khi triển khai training.
+# TODO: Thêm cấu hình data augmentation (mosaic, mixup, v.v.).
+# TODO: Thêm cấu hình dataset.

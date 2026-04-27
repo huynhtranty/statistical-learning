@@ -1,35 +1,18 @@
-# DETR (HuggingFace) training config
-# All three models share: input_size=640, seed=42, COCO JSON annotations.
+# Cấu hình kiến trúc DETR
+# Chỉ chứa thông số model cơ bản. Cấu hình dataset/split sẽ thêm sau.
 
 model:
-  pretrained_id: facebook/detr-resnet-50
-  num_queries: 100        # max objects per image — DETR predicts a fixed number
-  ignore_mismatched_sizes: true   # required when changing num_labels
+  model_name: detr_resnet50
+  num_classes: 5            # Số lớp vật thể (không tính "no object")
+  image_size: 640
+  pretrained_backbone: true
+  num_queries: 100          # Số vật thể tối đa có thể detect mỗi ảnh
+  hidden_dim: 256           # Số chiều ẩn của transformer
+  num_heads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
 
-data:
-  input_size: 640
-  classes_file: data/processed/annotations/classes.txt
-  train_ann: data/processed/annotations/train.json
-  val_ann: data/processed/annotations/val.json
-  train_images: data/processed/images/train
-  val_images: data/processed/images/val
-
-train:
-  epochs: 50
-  batch_size: 4
-  num_workers: 2
-  seed: 42
-  optimizer:
-    name: AdamW
-    lr: 0.0001            # lr for transformer
-    backbone_lr: 0.00001  # smaller lr for the pretrained ResNet backbone
-    weight_decay: 0.0001
-  scheduler:
-    name: StepLR
-    step_size: 30
-    gamma: 0.1
-  gradient_clip_norm: 0.1
-
-logging:
-  project: runs/detr
-  name: exp
+# TODO: Thêm cấu hình optimizer (AdamW, learning rate riêng cho backbone và transformer).
+# TODO: Thêm cấu hình scheduler và gradient clipping.
+# TODO: Thêm cấu hình trọng số loss (cost_class, cost_bbox, cost_giou).
+# TODO: Thêm cấu hình dataset và data augmentation.
