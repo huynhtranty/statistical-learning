@@ -12,9 +12,12 @@ Mỗi object query dự đoán một vật thể hoặc "no object" (∅).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 from torch import Tensor
+import yaml
 
 from .backbone import DETRBackbone
 from .transformer import DETRTransformer
@@ -114,10 +117,13 @@ class DETR(nn.Module):
 
 
 def build_detr(
-    num_classes: int = 5,
-    num_queries: int = 100,
-    hidden_dim: int = 256,
-    pretrained_backbone: bool = True,
+    num_classes: int | None = None,
+    num_queries: int | None = None,
+    hidden_dim: int | None = None,
+    num_heads: int | None = None,
+    num_encoder_layers: int | None = None,
+    num_decoder_layers: int | None = None,
+    pretrained_backbone: bool | None = None,
 ) -> DETR:
     """Tạo mô hình DETR.
 
@@ -130,11 +136,33 @@ def build_detr(
     Returns:
         Mô hình DETR sẵn sàng để train hoặc inference.
     """
-    # TODO: Cho phép cấu hình chi tiết hơn (num_heads, num_layers, v.v.) từ config.yaml.
+    config_path = Path(__file__).with_name("config.yaml")
+    with config_path.open("r", encoding="utf-8") as f:
+        model_cfg = yaml.safe_load(f).get("model", {})
+
+    num_classes = model_cfg.get("num_classes", 5) if num_classes is None else num_classes
+    num_queries = model_cfg.get("num_queries", 100) if num_queries is None else num_queries
+    hidden_dim = model_cfg.get("hidden_dim", 256) if hidden_dim is None else hidden_dim
+    num_heads = model_cfg.get("num_heads", 8) if num_heads is None else num_heads
+    num_encoder_layers = (
+        model_cfg.get("num_encoder_layers", 6) if num_encoder_layers is None else num_encoder_layers
+    )
+    num_decoder_layers = (
+        model_cfg.get("num_decoder_layers", 6) if num_decoder_layers is None else num_decoder_layers
+    )
+    pretrained_backbone = (
+        model_cfg.get("pretrained_backbone", True)
+        if pretrained_backbone is None
+        else pretrained_backbone
+    )
+
     # TODO: Hỗ trợ load checkpoint pretrained trên COCO từ HuggingFace.
     return DETR(
         num_classes=num_classes,
         hidden_dim=hidden_dim,
         num_queries=num_queries,
+        num_heads=num_heads,
+        num_encoder_layers=num_encoder_layers,
+        num_decoder_layers=num_decoder_layers,
         pretrained_backbone=pretrained_backbone,
     )
