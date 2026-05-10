@@ -64,14 +64,31 @@ weights/*.safetensors
 !weights/.gitkeep
 
 # --- Datasets (do not commit raw or processed images) ---
+# Ignore toàn bộ data
 data/*
 
 !data/README.md
+
 !data/source/
 !data/source/**
 
-!data/.gitkeep
+!data/raw/
+!data/images/
+!data/labels/
+!data/voc_annotations/
+!data/annotations/
 
+data/raw/*
+data/images/*
+data/labels/*
+data/voc_annotations/*
+data/annotations/*
+
+!data/raw/.gitkeep
+!data/images/.gitkeep
+!data/labels/.gitkeep
+!data/voc_annotations/.gitkeep
+!data/annotations/.gitkeep
 # --- IDE / editor ---
 .vscode/
 .idea/
