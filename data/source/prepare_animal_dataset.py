@@ -3,17 +3,6 @@ prepare_animal_dataset.py
 =========================
 Tải COCO 2017 (train + val) qua FiftyOne, lọc các lớp động vật,
 rồi chia thành train/val/test với tỷ lệ tuỳ chỉnh.
-
-Cài đặt trước khi chạy:
-    pip install fiftyone ultralytics pycocotools scikit-learn tqdm
-
-Cách dùng:
-    # Dùng tỷ lệ mặc định 70/15/15
-    python prepare_animal_dataset.py
-
-    # Tuỳ chỉnh tỷ lệ (train val test, tổng phải = 1.0)
-    python prepare_animal_dataset.py --split 0.8 0.1 0.1
-    python prepare_animal_dataset.py --split 0.7 0.2 0.1
 """
 
 import argparse, json, shutil, random
