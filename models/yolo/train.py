@@ -133,7 +133,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, writ
     return total_loss / len(dataloader)
 
 
-@torch.no_eval
+@torch.no_grad
 def validate(model, dataloader, criterion, device):
     """Validate model."""
     model.eval()
