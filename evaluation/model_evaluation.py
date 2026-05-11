@@ -788,7 +788,7 @@ def load_model(
         model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
     elif model_type == "yolo":
         from models.yolo import build_yolo
-        model = build_yolo(num_classes=5)
+        model = build_yolo(num_classes=6)
     elif model_type == "detr":
         from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
         model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
