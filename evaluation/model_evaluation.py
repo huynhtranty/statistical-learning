@@ -223,7 +223,7 @@ def benchmark_speed(
         torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad():
-        _ = model(dummy_input)
+        _ = model(dummy_input.to(device))
     if device == "cuda":
         torch.cuda.synchronize()
     cold_start_ms = (time.perf_counter() - t0) * 1000
@@ -231,7 +231,7 @@ def benchmark_speed(
     # Warmup
     for _ in range(warmup_iters):
         with torch.no_grad():
-            _ = model(dummy_input)
+            _ = model(dummy_input.to(device))
     if device == "cuda":
         torch.cuda.synchronize()
 
@@ -242,7 +242,7 @@ def benchmark_speed(
             torch.cuda.synchronize()
         t_start = time.perf_counter()
         with torch.no_grad():
-            _ = model(dummy_input)
+            _ = model(dummy_input.to(device))
         if device == "cuda":
             torch.cuda.synchronize()
         latencies.append((time.perf_counter() - t_start) * 1000)
