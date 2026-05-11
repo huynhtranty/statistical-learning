@@ -70,11 +70,11 @@ class YOLOLoss(nn.Module):
         target_labels: list[Tensor],
     ) -> Tensor:
         device = predictions[0].device
-        total_loss = torch.tensor(0.0, device=device)
+        total_loss = torch.zeros(1, device=device, requires_grad=True)
 
-        obj_loss = torch.tensor(0.0, device=device)
-        cls_loss = torch.tensor(0.0, device=device)
-        box_loss = torch.tensor(0.0, device=device)
+        obj_loss = torch.zeros(1, device=device, requires_grad=True)
+        cls_loss = torch.zeros(1, device=device, requires_grad=True)
+        box_loss = torch.zeros(1, device=device, requires_grad=True)
 
         batch_size = predictions[0].shape[0]
 
