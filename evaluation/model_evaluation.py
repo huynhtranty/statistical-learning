@@ -33,6 +33,7 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.nn as nn
+import cv2
 from torch.utils.data import DataLoader, Dataset
 
 # Add project root to path for imports
@@ -579,6 +580,99 @@ def evaluate_model(
         confusion_matrix=confusion,
         pr_curve=pr_curve,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Bounding Box Visualization
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLASS_COLORS = [
+    (235, 122, 67),   # cat     – warm orange
+    (67, 142, 219),   # dog     – sky blue
+    (130, 235, 149),   # horse   – mint green
+    (235, 176, 33),   # cow     – golden yellow
+    (198, 120, 255),  # bird    – violet
+    (129, 236, 236),  # sheep   – cyan
+]
+
+_DEFAULT_CLASSES = ["cat", "dog", "horse", "cow", "bird", "sheep"]
+
+
+def get_color(class_id: int) -> tuple[int, int, int]:
+    return _CLASS_COLORS[class_id % len(_CLASS_COLORS)]
+
+
+def draw_boxes(
+    image: "np.ndarray",
+    boxes: list,
+    labels: list,
+    scores: list | None = None,
+    class_names: list[str] | None = None,
+    box_thickness: int = 2,
+    font_scale: float = 0.55,
+) -> "np.ndarray":
+    """
+    Draw bounding boxes with class labels and confidence scores on an image.
+
+    Args:
+        image: RGB image as numpy array (H, W, 3)
+        boxes: list of [x, y, w, h] in pixel coordinates (COCO format)
+        labels: list of class indices (int)
+        scores: list of confidence scores (float), optional
+        class_names: list of class names; falls back to DEFAULT_CLASSES
+        box_thickness: line thickness
+        font_scale: font scale for label text
+
+    Returns:
+        Image with drawn boxes (RGB numpy array)
+    """
+    class_names = class_names or _DEFAULT_CLASSES
+    img_h, img_w = image.shape[:2]
+
+    for i, (box, label) in enumerate(zip(boxes, labels)):
+        x, y, w, h = box
+        x1, y1 = int(x), int(y)
+        x2, y2 = int(x + w), int(y + h)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(img_w - 1, x2), min(img_h - 1, y2)
+
+        color = get_color(int(label) % len(_CLASS_COLORS))
+
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, box_thickness)
+
+        cls_name = (
+            class_names[int(label)]
+            if int(label) < len(class_names)
+            else f"class_{label}"
+        )
+        if scores is not None and i < len(scores):
+            label_text = f"{cls_name} {scores[i]:.2f}"
+        else:
+            label_text = cls_name
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (text_w, text_h), baseline = cv2.getTextSize(label_text, font, font_scale, 1)
+        text_y = max(y1 - 4, text_h + 4)
+
+        cv2.rectangle(
+            image,
+            (x1, text_y - text_h - baseline),
+            (x1 + text_w, text_y + baseline // 2),
+            color,
+            -1,
+        )
+        cv2.putText(
+            image,
+            label_text,
+            (x1, text_y - baseline // 2),
+            font,
+            font_scale,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    return image
 
 
 # ─────────────────────────────────────────────────────────────────────────────

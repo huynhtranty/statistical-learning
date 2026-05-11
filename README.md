@@ -47,19 +47,51 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## GPU Setup (Local Machine)
+
+pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
+
+Kiểm tra GPU available:
+
+```bash
+nvidia-smi
+```
+
+Mặc định PyTorch sẽ tự động detect và sử dụng GPU nếu có. Để chỉ định GPU cụ thể hoặc device:
+
+```bash
+# Sử dụng GPU đầu tiên (mặc định)
+python script.py --device cuda
+
+# Chỉ định GPU cụ thể (GPU 0)
+python script.py --device cuda:0
+
+# Sử dụng CPU (không khuyến khích - chậm)
+python script.py --device cpu
+```
+
+Kiểm tra GPU trong Python:
+
+```python
+import torch
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"GPU count: {torch.cuda.device_count()}")
+print(f"Current GPU: {torch.cuda.get_device_name(0)}")
+```
+
 ## Train
 
 Each model has its own training entrypoint and config. All accept the same CLI flags.
 
 ```bash
 # Faster R-CNN
-python models/faster_rcnn/train.py --data data --epochs 50 --batch_size 8 --output weights/faster_rcnn.pth
+python models/faster_rcnn/train.py --data data --epochs 50 --batch_size 8 --output weights/faster_rcnn.pth --device cuda
 
 # YOLO
-python models/yolo/train.py --data data --epochs 50 --batch_size 16 --output weights/yolo.pt
+python models/yolo/train.py --data data --epochs 50 --batch_size 8 --output weights/yolo.pt --device cuda
 
 # DETR
-python models/detr/train.py --data data --epochs 50 --batch_size 4 --output weights/detr.pth
+python models/detr/train.py --data data --epochs 50 --batch_size 8 --output weights/detr.pth --device cuda
 ```
 
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
@@ -71,6 +103,7 @@ Shared evaluation pipeline reports identical metrics for every model:
 ```bash
 # ─── Full Comprehensive Evaluation (RECOMMENDED) ─────────────────────────────
 # Single model with all metrics: mAP, Precision, Recall, FPS, Params, FLOPs, Confusion Matrix, PR Curve
+# GPU: cuda | CPU: cpu
 python evaluation/model_evaluation.py \
     --model faster_rcnn \
     --weights weights/faster_rcnn.pth \
@@ -88,6 +121,7 @@ python evaluation/model_evaluation.py \
     --ground-truth data/annotations/test.json \
     --num-classes 6 \
     --device cuda \
+    --output evaluation/results/test_vis \
     --plot
 
 # DETR

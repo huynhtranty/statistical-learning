@@ -61,7 +61,7 @@ class CocoDetection(Dataset):
         self.images = self.coco_data["images"]
         self.img_id_to_annotations = self._build_img_id_map()
 
-        self.transform = transform or self._default_transform(augment=augment)
+        self.transform = transform  # model handles resize internally
 
     def _build_img_id_map(self) -> dict[int, list[dict]]:
         img_id_map = {}
@@ -71,31 +71,6 @@ class CocoDetection(Dataset):
                 img_id_map[img_id] = []
             img_id_map[img_id].append(ann)
         return img_id_map
-
-    def _default_transform(self, augment: bool = False) -> transforms.Compose:
-        transform_list = [
-            transforms.Resize((self.img_size, self.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            ),
-        ]
-        
-        if augment:
-            transform_list = [
-                transforms.Resize((self.img_size, self.img_size)),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-                transforms.RandomRotation(10),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        
-        return transforms.Compose(transform_list)
 
     def __len__(self) -> int:
         return len(self.images)
@@ -107,17 +82,13 @@ class CocoDetection(Dataset):
 
         image = Image.open(img_path).convert("RGB")
 
-        original_size = image.size
-
-        if self.transform:
-            image = self.transform(image)
+        # Resize all images to consistent img_size to ensure torch.stack works in collate_fn
+        image = image.resize((self.img_size, self.img_size), Image.BILINEAR)
 
         annotations = self.img_id_to_annotations.get(img_id, [])
 
         boxes = []
         labels = []
-        areas = []
-        iscrowd = []
 
         for ann in annotations:
             cat_id = ann["category_id"]
@@ -125,35 +96,36 @@ class CocoDetection(Dataset):
                 continue
 
             x, y, w, h = ann["bbox"]
-            x_center = (x + w / 2) / original_size[0]
-            y_center = (y + h / 2) / original_size[1]
-            width = w / original_size[0]
-            height = h / original_size[1]
-
-            boxes.append([x_center, y_center, width, height])
+            # torchvision Faster R-CNN expects xyxy format
+            boxes.append([x, y, x + w, y + h])
             labels.append(cat_id)
-            areas.append(ann.get("area", w * h))
-            iscrowd.append(ann.get("iscrowd", 0))
 
         target = {
-            "image_id": img_id,
-            "orig_size": original_size,
+            "image_id": torch.tensor([img_id], dtype=torch.int64),
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4)),
             "labels": torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
-            "areas": torch.tensor(areas, dtype=torch.float32) if areas else torch.zeros((0,)),
-            "iscrowd": torch.tensor(iscrowd, dtype=torch.int64) if iscrowd else torch.zeros((0,), dtype=torch.int64),
         }
 
         return image, target
 
 
 def collate_fn(batch: list) -> tuple:
-    """Custom collate function để xử lý batches có số lượng boxes khác nhau."""
+    """Custom collate function — handles PIL images and variable box counts."""
+    from torchvision.transforms import functional as F
+
     images = []
     targets = []
 
     for img, target in batch:
-        images.append(img)
+        if not isinstance(img, torch.Tensor):
+            img_pil = img
+            w, h = img_pil.size
+            if w != 640 or h != 640:
+                img_pil = img_pil.resize((640, 640), Image.BILINEAR)
+            img_tensor = F.to_tensor(img_pil)
+            images.append(img_tensor)
+        else:
+            images.append(img)
         targets.append(target)
 
     return torch.stack(images, 0), targets
