@@ -106,3 +106,5 @@ Desktop.ini
 *.bak
 *.tmp
 models/yolo/checkpoints/
+models/yolo/checkpoints/
+*.pt
