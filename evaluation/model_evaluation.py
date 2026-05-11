@@ -163,7 +163,8 @@ def estimate_flops(model: nn.Module, input_size: int = INPUT_SIZE) -> int:
     """Estimate FLOPs using thop library if available, otherwise fallback."""
     try:
         from thop import profile
-        dummy = torch.randn(1, 3, input_size, input_size)
+        device = next(model.parameters()).device
+        dummy = torch.randn(1, 3, input_size, input_size, device=device)
         flops, _ = profile(model, inputs=(dummy,), verbose=False)
         return int(flops)
     except ImportError:
@@ -179,10 +180,14 @@ def estimate_flops(model: nn.Module, input_size: int = INPUT_SIZE) -> int:
         return total_flops
 
 
-def get_model_complexity(model: nn.Module, weights_path: Path | None = None) -> ModelComplexity:
+def get_model_complexity(
+    model: nn.Module,
+    weights_path: Path | None = None,
+    input_size: int = INPUT_SIZE,
+) -> ModelComplexity:
     """Calculate model complexity metrics."""
     params = count_parameters(model)
-    flops = estimate_flops(model)
+    flops = estimate_flops(model, input_size=input_size)
 
     model_size_mb = 0.0
     if weights_path and weights_path.exists():
@@ -544,7 +549,7 @@ def evaluate_model(
     model.eval()
 
     # 1. Model Complexity
-    complexity = get_model_complexity(model, weights_path)
+    complexity = get_model_complexity(model, weights_path, input_size=input_size)
 
     # 2. Speed Benchmark
     speed = benchmark_speed(model, device, input_size, speed_iters)
