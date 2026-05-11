@@ -47,6 +47,7 @@ class CocoDetection(Dataset):
         img_size: int = 640,
         transform: transforms.Compose | None = None,
         return_masks: bool = False,
+        augment: bool = False,
     ):
         self.img_folder = Path(img_folder)
         self.img_size = img_size
@@ -60,7 +61,7 @@ class CocoDetection(Dataset):
         self.images = self.coco_data["images"]
         self.img_id_to_annotations = self._build_img_id_map()
 
-        self.transform = transform or self._default_transform()
+        self.transform = transform or self._default_transform(augment=augment)
 
     def _build_img_id_map(self) -> dict[int, list[dict]]:
         img_id_map = {}
@@ -71,15 +72,30 @@ class CocoDetection(Dataset):
             img_id_map[img_id].append(ann)
         return img_id_map
 
-    def _default_transform(self) -> transforms.Compose:
-        return transforms.Compose([
+    def _default_transform(self, augment: bool = False) -> transforms.Compose:
+        transform_list = [
             transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
             ),
-        ])
+        ]
+        
+        if augment:
+            transform_list = [
+                transforms.Resize((self.img_size, self.img_size)),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                transforms.RandomRotation(10),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        
+        return transforms.Compose(transform_list)
 
     def __len__(self) -> int:
         return len(self.images)

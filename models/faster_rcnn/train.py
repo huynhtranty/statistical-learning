@@ -56,6 +56,10 @@ def parse_args() -> argparse.Namespace:
                     help="Thư mục gốc lưu checkpoints và logs (mặc định: models/faster_rcnn)")
     p.add_argument("--resume", type=str, default=None,
                     help="Đường dẫn checkpoint để resume training")
+    p.add_argument("--augment", action="store_true",
+                    help="Sử dụng data augmentation (RandomHorizontalFlip, ColorJitter, RandomRotation)")
+    p.add_argument("--output", type=str, default=None,
+                    help="Đường dẫn lưu checkpoint cuối cùng")
     return p.parse_args()
 
 
@@ -85,6 +89,7 @@ def build_dataloaders(args: argparse.Namespace, classes: list[str]):
         ann_file=Path(args.data_root) / "annotations" / "train.json",
         classes=classes,
         img_size=args.img_size,
+        augment=args.augment,
     )
 
     val_dataset = CocoDetection(
@@ -224,6 +229,7 @@ def main():
     print(f"[Faster R-CNN] Device: {device}")
     print(f"[Faster R-CNN] Batch size: {args.batch_size}")
     print(f"[Faster R-CNN] Learning rate: {args.lr}")
+    print(f"[Faster R-CNN] Data augmentation: {args.augment}")
 
     for epoch in range(start_epoch, args.epochs):
         train_loss = train_one_epoch(
@@ -250,6 +256,17 @@ def main():
                 "classes": classes,
             }, best_checkpoint_path)
             print(f"[Faster R-CNN] Saved best model to {best_checkpoint_path}")
+
+        if args.output:
+            final_path = Path(args.output)
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_loss": best_val_loss,
+                "classes": classes,
+            }, final_path)
+            print(f"[Faster R-CNN] Saved final model to {final_path}")
 
     writer.close()
     print("[Faster R-CNN] Training completed!")

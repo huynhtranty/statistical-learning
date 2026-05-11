@@ -53,13 +53,13 @@ Each model has its own training entrypoint and config. All accept the same CLI f
 
 ```bash
 # Faster R-CNN
-python models/faster_rcnn/train.py --data data/processed --epochs 50 --batch-size 8 --output weights/faster_rcnn.pth
+python models/faster_rcnn/train.py --data data --epochs 50 --batch_size 8 --output weights/faster_rcnn.pth
 
 # YOLO
-python models/yolo/train.py --data data/processed --epochs 50 --batch-size 16 --output weights/yolo.pt
+python models/yolo/train.py --data data --epochs 50 --batch_size 16 --output weights/yolo.pt
 
 # DETR
-python models/detr/train.py --data data/processed --epochs 50 --batch-size 4 --output weights/detr.pth
+python models/detr/train.py --data data --epochs 50 --batch_size 4 --output weights/detr.pth
 ```
 
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
@@ -73,10 +73,10 @@ Shared evaluation pipeline reports identical metrics for every model:
 # Single model with all metrics: mAP, Precision, Recall, FPS, Params, FLOPs, Confusion Matrix, PR Curve
 python evaluation/model_evaluation.py \
     --model faster_rcnn \
-    --weights weights/faster_rcnn.pt \
+    --weights weights/faster_rcnn.pth \
     --predictions predictions/faster_rcnn_test.json \
-    --ground-truth data/processed/annotations/test.json \
-    --num-classes 5 \
+    --ground-truth data/annotations/test.json \
+    --num-classes 6 \
     --device cuda \
     --plot
 
@@ -85,18 +85,18 @@ python evaluation/model_evaluation.py \
     --model yolo \
     --weights weights/yolo.pt \
     --predictions predictions/yolo_test.json \
-    --ground-truth data/processed/annotations/test.json \
-    --num-classes 5 \
+    --ground-truth data/annotations/test.json \
+    --num-classes 6 \
     --device cuda \
     --plot
 
 # DETR
 python evaluation/model_evaluation.py \
     --model detr \
-    --weights weights/detr.pt \
+    --weights weights/detr.pth \
     --predictions predictions/detr_test.json \
-    --ground-truth data/processed/annotations/test.json \
-    --num-classes 5 \
+    --ground-truth data/annotations/test.json \
+    --num-classes 6 \
     --device cuda \
     --plot
 
@@ -106,7 +106,7 @@ python evaluation/model_evaluation.py --compare-all --device cuda --plot
 
 # ─── Speed Benchmark Only ─────────────────────────────────────────────────────
 # Measure FPS and latency without detection metrics
-python evaluation/benchmark_speed.py --weights weights/faster_rcnn.pt --model faster_rcnn --device cuda --iters 200
+python evaluation/benchmark_speed.py --weights weights/faster_rcnn.pth --model faster_rcnn --device cuda --iters 200
 python evaluation/benchmark_speed.py --weights weights/yolo.pt --model yolo --device cuda --iters 200
 python evaluation/benchmark_speed.py --weights weights/detr.pt --model detr --device cuda --iters 200
 
