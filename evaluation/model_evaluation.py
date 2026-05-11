@@ -797,7 +797,12 @@ def load_model(
 
     # Load weights if provided
     if weights_path and weights_path.exists():
-        state_dict = torch.load(weights_path, map_location=device)
+        checkpoint = torch.load(weights_path, map_location=device, weights_only=True)
+        # Handle checkpoints with metadata (epoch, optimizer_state_dict, etc.)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
         model.load_state_dict(state_dict)
 
     return model.to(device).eval()
