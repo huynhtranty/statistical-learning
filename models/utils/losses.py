@@ -49,12 +49,14 @@ class YOLOLoss(nn.Module):
     def __init__(
         self,
         num_classes: int,
+        num_anchors: int = 3,
         lambda_obj: float = 1.0,
         lambda_cls: float = 1.0,
-        lambda_box: float = 1.0,
+        lambda_box: float = 5.0,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
+        self.num_anchors = num_anchors
         self.lambda_obj = lambda_obj
         self.lambda_cls = lambda_cls
         self.lambda_box = lambda_box
@@ -70,25 +72,41 @@ class YOLOLoss(nn.Module):
         target_labels: list[Tensor],
     ) -> Tensor:
         device = predictions[0].device
-        total_loss = torch.zeros(1, device=device, requires_grad=True)
-
+        
         obj_loss = torch.zeros(1, device=device, requires_grad=True)
         cls_loss = torch.zeros(1, device=device, requires_grad=True)
         box_loss = torch.zeros(1, device=device, requires_grad=True)
 
         batch_size = predictions[0].shape[0]
-
-        for pred in predictions:
-            if pred.shape[-1] == self.num_classes + 5:
-                obj_head = pred[..., 4]
-                cls_head = pred[..., 5:]
-                box_loss += torch.mean(pred[..., :4] ** 2)
-
-                obj_loss += torch.mean(torch.sigmoid(obj_head) ** 2)
-                if cls_head.shape[-1] > 0:
-                    cls_loss += torch.mean(cls_head ** 2)
-
         num_scales = len(predictions)
+        
+        for pred in predictions:
+            # pred shape: (batch, num_anchors * (5 + num_classes), H, W)
+            channels = self.num_anchors * (5 + self.num_classes)
+            
+            if pred.shape[1] == channels:
+                # Reshape to (batch, num_anchors, 5+num_classes, H, W)
+                pred = pred.view(batch_size, self.num_anchors, 5 + self.num_classes, pred.shape[2], pred.shape[3])
+                
+                # Get components
+                pred_boxes = pred[:, :, :4, :, :]      # tx, ty, tw, th
+                pred_obj = pred[:, :, 4, :, :]          # objectness logits
+                pred_cls = pred[:, :, 5:, :, :]         # class logits
+                
+                # Objectness loss: BCE on raw logits (can be negative/positive)
+                obj_loss = obj_loss + F.binary_cross_entropy_with_logits(
+                    pred_obj, torch.zeros_like(pred_obj), reduction='mean'
+                )
+                
+                # Classification loss: Cross entropy on raw logits
+                # Flatten: (batch, num_anchors*H*W, num_classes)
+                pred_cls_flat = pred_cls.permute(0, 1, 3, 4, 2).reshape(-1, self.num_classes)
+                target_cls = torch.zeros(pred_cls_flat.shape[0], dtype=torch.long, device=device)
+                cls_loss = cls_loss + F.cross_entropy(pred_cls_flat, target_cls, reduction='mean')
+                
+                # Box loss: L1 loss on bbox predictions
+                box_loss = box_loss + F.l1_loss(pred_boxes, torch.zeros_like(pred_boxes), reduction='mean')
+
         total_loss = (
             self.lambda_obj * obj_loss / num_scales +
             self.lambda_cls * cls_loss / num_scales +

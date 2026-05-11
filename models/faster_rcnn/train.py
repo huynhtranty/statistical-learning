@@ -14,6 +14,10 @@ Dataset structure expected:
 
 Usage:
     python models/faster_rcnn/train.py --data_root data --epochs 50 --batch_size 4
+
+Checkpoints và logs được lưu tại:
+    models/faster_rcnn/checkpoints/best_model.pt
+    models/faster_rcnn/logs/
 """
 from __future__ import annotations
 
@@ -48,10 +52,8 @@ def parse_args() -> argparse.Namespace:
                     help="Số workers cho DataLoader (mặc định: 4)")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                     help="Thiết bị chạy (cpu hoặc cuda)")
-    p.add_argument("--checkpoint_dir", type=str, default="models/faster_rcnn/checkpoints",
-                    help="Thư mục lưu checkpoints")
-    p.add_argument("--log_dir", type=str, default="models/faster_rcnn/logs",
-                    help="Thư mục lưu logs")
+    p.add_argument("--base_dir", type=str, default="models/faster_rcnn",
+                    help="Thư mục gốc lưu checkpoints và logs (mặc định: models/faster_rcnn)")
     p.add_argument("--resume", type=str, default=None,
                     help="Đường dẫn checkpoint để resume training")
     return p.parse_args()
@@ -190,14 +192,18 @@ def main():
     model = build_faster_rcnn(num_classes=num_classes)
     model.to(device)
 
-    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir = Path(args.base_dir) / "checkpoints"
+    log_dir = Path(args.base_dir) / "logs"
+    
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir)
+    
+    print(f"[Faster R-CNN] Checkpoints: {checkpoint_dir}")
+    print(f"[Faster R-CNN] Logs: {log_dir}")
 
     train_loader, val_loader = build_dataloaders(args, classes)
+
+    writer = SummaryWriter(log_dir=log_dir)
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=5e-4)
@@ -235,25 +241,15 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            checkpoint_path = checkpoint_dir / "best_model.pt"
+            best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
-            }, checkpoint_path)
-            print(f"[Faster R-CNN] Saved best model to {checkpoint_path}")
-
-        if (epoch + 1) % 10 == 0:
-            checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch+1}.pt"
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_val_loss": val_loss,
-                "classes": classes,
-            }, checkpoint_path)
+            }, best_checkpoint_path)
+            print(f"[Faster R-CNN] Saved best model to {best_checkpoint_path}")
 
     writer.close()
     print("[Faster R-CNN] Training completed!")

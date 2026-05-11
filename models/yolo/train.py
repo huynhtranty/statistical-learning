@@ -14,12 +14,17 @@ Dataset structure expected:
 
 Usage:
     python models/yolo/train.py --data_root data --epochs 50 --batch_size 8
+
+Checkpoints và logs được lưu tại:
+    models/yolo/checkpoints/best_model.pt
+    models/yolo/logs/
 """
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from datetime import datetime
 from tqdm import tqdm
 
 import torch
@@ -50,10 +55,8 @@ def parse_args() -> argparse.Namespace:
                     help="Số workers cho DataLoader (mặc định: 4)")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                     help="Thiết bị chạy (cpu hoặc cuda)")
-    p.add_argument("--checkpoint_dir", type=str, default="models/yolo/checkpoints",
-                    help="Thư mục lưu checkpoints")
-    p.add_argument("--log_dir", type=str, default="models/yolo/logs",
-                    help="Thư mục lưu logs")
+    p.add_argument("--base_dir", type=str, default="models/yolo",
+                    help="Thư mục gốc lưu checkpoints và logs (mặc định: models/yolo)")
     p.add_argument("--resume", type=str, default=None,
                     help="Đường dẫn checkpoint để resume training")
     return p.parse_args()
@@ -160,20 +163,24 @@ def main():
     classes = get_class_names(Path(args.data_root) / "annotations")
     num_classes = len(classes)
 
+    checkpoint_dir = Path(args.base_dir) / "checkpoints"
+    log_dir = Path(args.base_dir) / "logs"
+    
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"[YOLO] Checkpoints: {checkpoint_dir}")
+    print(f"[YOLO] Logs: {log_dir}")
+    
+    writer = SummaryWriter(log_dir=log_dir)
+    
+    train_loader, val_loader = build_dataloaders(args, classes)
+
     print(f"[YOLO] Building model with {num_classes} classes: {classes}")
     model = build_yolo(num_classes=num_classes)
     model.to(device)
 
-    checkpoint_dir = Path(args.checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    log_dir = Path(args.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir)
-
-    train_loader, val_loader = build_dataloaders(args, classes)
-
-    criterion = YOLOLoss(num_classes=num_classes)
+    criterion = YOLOLoss(num_classes=num_classes, num_anchors=3)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
@@ -209,25 +216,15 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            checkpoint_path = checkpoint_dir / "best_model.pt"
+            best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
-            }, checkpoint_path)
-            print(f"[YOLO] Saved best model to {checkpoint_path}")
-
-        if (epoch + 1) % 10 == 0:
-            checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch+1}.pt"
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_val_loss": val_loss,
-                "classes": classes,
-            }, checkpoint_path)
+            }, best_checkpoint_path)
+            print(f"[YOLO] Saved best model to {best_checkpoint_path}")
 
     writer.close()
     print("[YOLO] Training completed!")
