@@ -35,7 +35,7 @@ Train and evaluate three object detection models on the same dataset, with the s
 - **Identical train/val/test split** across all three models (see `scripts/split_dataset.py`).
 - **Standardized input resolution**: 640 x 640.
 - **Random seed**: 42 in every training script.
-- **Reported metrics**: mAP@0.5, mAP@0.5:0.95, per-class AP, FPS, model size (MB), training time.
+- **Reported metrics**: mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1-Score, FPS, Params, FLOPs, Confusion Matrix, PR Curve.
 
 ## Setup
 
@@ -69,9 +69,73 @@ Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md),
 Shared evaluation pipeline reports identical metrics for every model:
 
 ```bash
-python evaluation/evaluate.py --predictions <preds.json> --ground-truth data/processed/annotations/test.json
-python evaluation/benchmark_speed.py --weights weights/yolo.pt --model yolo
+# ─── Full Comprehensive Evaluation (RECOMMENDED) ─────────────────────────────
+# Single model with all metrics: mAP, Precision, Recall, FPS, Params, FLOPs, Confusion Matrix, PR Curve
+python evaluation/model_evaluation.py \
+    --model faster_rcnn \
+    --weights weights/faster_rcnn.pt \
+    --predictions predictions/faster_rcnn_test.json \
+    --ground-truth data/processed/annotations/test.json \
+    --num-classes 5 \
+    --device cuda \
+    --plot
+
+# YOLO
+python evaluation/model_evaluation.py \
+    --model yolo \
+    --weights weights/yolo.pt \
+    --predictions predictions/yolo_test.json \
+    --ground-truth data/processed/annotations/test.json \
+    --num-classes 5 \
+    --device cuda \
+    --plot
+
+# DETR
+python evaluation/model_evaluation.py \
+    --model detr \
+    --weights weights/detr.pt \
+    --predictions predictions/detr_test.json \
+    --ground-truth data/processed/annotations/test.json \
+    --num-classes 5 \
+    --device cuda \
+    --plot
+
+# ─── Compare All Models ───────────────────────────────────────────────────────
+# Run all three models and display comparison table
+python evaluation/model_evaluation.py --compare-all --device cuda --plot
+
+# ─── Speed Benchmark Only ─────────────────────────────────────────────────────
+# Measure FPS and latency without detection metrics
+python evaluation/benchmark_speed.py --weights weights/faster_rcnn.pt --model faster_rcnn --device cuda --iters 200
+python evaluation/benchmark_speed.py --weights weights/yolo.pt --model yolo --device cuda --iters 200
+python evaluation/benchmark_speed.py --weights weights/detr.pt --model detr --device cuda --iters 200
+
+# ─── Basic mAP Evaluation (requires pycocotools) ─────────────────────────────
+python evaluation/evaluate.py \
+    --predictions predictions/yolo_test.json \
+    --ground-truth data/processed/annotations/test.json \
+    --weights weights/yolo.pt
 ```
+
+### Output Metrics
+
+| Metric | Description |
+|--------|-------------|
+| **mAP@0.5** | Mean Average Precision at IoU=0.5 |
+| **mAP@0.5:0.95** | Mean AP averaged from IoU 0.5 to 0.95 |
+| **Precision** | True Positives / (True Positives + False Positives) |
+| **Recall** | True Positives / (True Positives + False Negatives) |
+| **F1-Score** | Harmonic mean of Precision and Recall |
+| **FPS** | Frames per second (inference speed) |
+| **Params** | Total trainable parameters (millions) |
+| **FLOPs** | Floating point operations (billions) |
+| **Confusion Matrix** | TP/FP/FN counts per class |
+| **PR Curve** | Precision-Recall curve with AUC-PR |
+
+### Results Location
+
+- JSON results: `evaluation/results/evaluation.json`
+- PR curve plots: `evaluation/results/<model>_pr_curve.png`
 
 ## Run the Web App
 
