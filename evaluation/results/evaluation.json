@@ -1,0 +1,43 @@
+{
+  "summary": {
+    "total_models": 1,
+    "best_mAP_model": "yolo",
+    "best_FPS_model": "yolo",
+    "best_precision_model": "yolo"
+  },
+  "results": [
+    {
+      "model_name": "yolo",
+      "weights_path": "weights/yolo.pt",
+      "device": "cpu",
+      "input_size": 640,
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0,
+        "mAP_50": 0.0,
+        "mAP_50_95": 0.0,
+        "mAP_75": 0.0,
+        "per_class_ap": {}
+      },
+      "complexity": {
+        "params": 11213955,
+        "params_mb": 11.213955,
+        "flops": 14061772800,
+        "flops_g": 14.0617728,
+        "model_size_mb": 128.54065704345703
+      },
+      "speed": {
+        "fps": 13.346439395345046,
+        "mean_latency_ms": 74.9263507950127,
+        "std_latency_ms": 11.7608277295487,
+        "p50_latency_ms": 71.96004149955115,
+        "p95_latency_ms": 94.5410169497336,
+        "p99_latency_ms": 105.14638074932009,
+        "cold_start_ms": 66.82170900239726
+      },
+      "confusion_matrix": null,
+      "pr_curve": null
+    }
+  ]
+}
