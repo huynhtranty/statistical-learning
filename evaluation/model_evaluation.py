@@ -216,7 +216,7 @@ def benchmark_speed(
 ) -> SpeedMetrics:
     """Benchmark model inference speed."""
     model.eval()
-    dummy_input = torch.randn(1, 3, input_size, input_size, device=device)
+    dummy_input = torch.randn(1, 3, input_size, input_size)
 
     # Cold start
     if device == "cuda":
@@ -797,7 +797,7 @@ def load_model(
 
     # Load weights if provided
     if weights_path and weights_path.exists():
-        checkpoint = torch.load(weights_path, map_location=device, weights_only=True)
+        checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
         # Handle checkpoints with metadata (epoch, optimizer_state_dict, etc.)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             state_dict = checkpoint["model_state_dict"]
