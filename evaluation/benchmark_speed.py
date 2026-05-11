@@ -186,20 +186,20 @@ def run_benchmark(
     warmup_iters: int = WARMUP_ITERS,
 ) -> BenchmarkResult:
     """Run benchmark on a loaded model and return results."""
-    dummy_input = torch.randn(1, 3, input_size, input_size, device=device)
+    dummy_input = torch.randn(1, 3, input_size, input_size)
 
     # Cold start timing
     torch.cuda.synchronize() if device == "cuda" else None
     t0 = time.perf_counter()
     with torch.no_grad():
-        _ = model(dummy_input)
+        _ = model(dummy_input.to(device))
     torch.cuda.synchronize() if device == "cuda" else None
     cold_start_ms = (time.perf_counter() - t0) * 1000
 
     # Warmup
     for _ in range(warmup_iters):
         with torch.no_grad():
-            _ = model(dummy_input)
+            _ = model(dummy_input.to(device))
     if device == "cuda":
         torch.cuda.synchronize()
 
@@ -209,7 +209,7 @@ def run_benchmark(
         torch.cuda.synchronize() if device == "cuda" else None
         t_start = time.perf_counter()
         with torch.no_grad():
-            _ = model(dummy_input)
+            _ = model(dummy_input.to(device))
         torch.cuda.synchronize() if device == "cuda" else None
         latencies.append((time.perf_counter() - t_start) * 1000)
 
