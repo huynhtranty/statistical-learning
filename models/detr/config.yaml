@@ -3,7 +3,7 @@
 
 model:
   model_name: detr_resnet50
-  num_classes: 5            # Số lớp vật thể (không tính "no object")
+  num_classes: 6            # Số lớp vật thể: cat, dog, horse, cow, bird, sheep (không tính "no object")
   image_size: 640
   pretrained_backbone: true
   num_queries: 100          # Số vật thể tối đa có thể detect mỗi ảnh
@@ -11,6 +11,7 @@ model:
   num_heads: 8
   num_encoder_layers: 6
   num_decoder_layers: 6
+  classes: ["cat", "dog", "horse", "cow", "bird", "sheep"]
 
 # TODO: Thêm cấu hình optimizer (AdamW, learning rate riêng cho backbone và transformer).
 # TODO: Thêm cấu hình scheduler và gradient clipping.

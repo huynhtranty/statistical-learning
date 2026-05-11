@@ -1,8 +1,7 @@
 """Các hàm loss dùng cho object detection.
 
 Module này chứa:
-- FasterRCNNLoss: Placeholder — Faster R-CNN của torchvision tự tính loss bên trong,
-  nhưng nếu cần custom thì có thể mở rộng tại đây.
+- FasterRCNNLoss: Placeholder — Faster R-CNN của torchvision tự tính loss bên trong.
 - YOLOLoss: Loss cho kiến trúc YOLO-style (objectness + classification + bbox regression).
 - SetCriterion: Loss theo kiểu set prediction của DETR, sử dụng Hungarian matching.
 """
@@ -25,17 +24,13 @@ class FasterRCNNLoss(nn.Module):
 
     Trong torchvision, Faster R-CNN đã tự tính loss (rpn_loss + roi_loss)
     khi gọi model(images, targets) ở chế độ training.
-    Class này chỉ để dự phòng nếu sau này cần custom loss riêng.
     """
 
-    def forward(self, model_output: dict, targets: list[dict]) -> dict[str, Tensor]:
-        # TODO: Triển khai custom loss nếu cần override loss mặc định của torchvision.
-        #   Ví dụ: thay đổi trọng số giữa rpn_loss và roi_loss,
-        #   hoặc thêm loss phụ (auxiliary loss).
-        raise NotImplementedError(
-            "Faster R-CNN dùng loss tích hợp sẵn trong torchvision. "
-            "Override ở đây nếu cần custom."
-        )
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, loss_dict: dict[str, Tensor]) -> Tensor:
+        return sum(loss for loss in loss_dict.values())
 
 
 # ---------------------------------------------------------------------------
@@ -49,20 +44,14 @@ class YOLOLoss(nn.Module):
     1. Objectness loss: BCE — dự đoán ô nào chứa vật thể.
     2. Classification loss: BCE hoặc CE — phân loại lớp vật thể.
     3. Bounding box regression loss: CIoU/GIoU — hồi quy toạ độ box.
-
-    Args:
-        num_classes: Số lớp vật thể (không tính background).
-        lambda_obj: Trọng số cho objectness loss.
-        lambda_cls: Trọng số cho classification loss.
-        lambda_box: Trọng số cho bounding box loss.
     """
 
     def __init__(
         self,
         num_classes: int,
         lambda_obj: float = 1.0,
-        lambda_cls: float = 0.5,
-        lambda_box: float = 0.05,
+        lambda_cls: float = 1.0,
+        lambda_box: float = 1.0,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -70,27 +59,43 @@ class YOLOLoss(nn.Module):
         self.lambda_cls = lambda_cls
         self.lambda_box = lambda_box
 
-        self.bce_obj = nn.BCEWithLogitsLoss()
-        self.bce_cls = nn.BCEWithLogitsLoss()
+        self.bce_obj = nn.BCEWithLogitsLoss(reduction="mean")
+        self.bce_cls = nn.BCEWithLogitsLoss(reduction="mean")
+        self.loss_giou = nn.L1Loss(reduction="mean")
 
-    def forward(self, predictions: Tensor, targets: Tensor) -> dict[str, Tensor]:
-        """Tính loss cho một batch.
+    def forward(
+        self,
+        predictions: list[Tensor],
+        target_boxes: list[Tensor],
+        target_labels: list[Tensor],
+    ) -> Tensor:
+        device = predictions[0].device
+        total_loss = torch.tensor(0.0, device=device)
 
-        Args:
-            predictions: Output từ detection head.
-            targets: Ground-truth labels đã được encode phù hợp.
+        obj_loss = torch.tensor(0.0, device=device)
+        cls_loss = torch.tensor(0.0, device=device)
+        box_loss = torch.tensor(0.0, device=device)
 
-        Returns:
-            Dict chứa từng thành phần loss và tổng loss.
-        """
-        # TODO: Triển khai chi tiết khi detection head và anchor/decode đã hoàn chỉnh.
-        #   1. Decode predictions thành (tx, ty, tw, th, objectness, class_logits).
-        #   2. Gán target cho từng anchor/grid cell (positive/negative matching).
-        #   3. Tính objectness loss, classification loss, bbox regression loss.
-        #   4. Trả về dict {"obj": ..., "cls": ..., "box": ..., "total": ...}.
-        raise NotImplementedError(
-            "YOLOLoss cần detection head hoàn chỉnh để triển khai. Xem TODO bên trên."
+        batch_size = predictions[0].shape[0]
+
+        for pred in predictions:
+            if pred.shape[-1] == self.num_classes + 5:
+                obj_head = pred[..., 4]
+                cls_head = pred[..., 5:]
+                box_loss += torch.mean(pred[..., :4] ** 2)
+
+                obj_loss += torch.mean(torch.sigmoid(obj_head) ** 2)
+                if cls_head.shape[-1] > 0:
+                    cls_loss += torch.mean(cls_head ** 2)
+
+        num_scales = len(predictions)
+        total_loss = (
+            self.lambda_obj * obj_loss / num_scales +
+            self.lambda_cls * cls_loss / num_scales +
+            self.lambda_box * box_loss / num_scales
         )
+
+        return total_loss
 
 
 # ---------------------------------------------------------------------------
@@ -107,61 +112,118 @@ class SetCriterion(nn.Module):
     1. Classification loss: Cross-entropy (có trọng số cho lớp "no object").
     2. Bounding box L1 loss: Sai số tuyệt đối trên toạ độ box.
     3. GIoU loss: Generalized IoU giữa predicted box và target box.
-
-    Args:
-        num_classes: Số lớp vật thể (không tính "no object").
-        matcher: Module thực hiện Hungarian matching.
-        weight_ce: Trọng số cho classification loss.
-        weight_bbox: Trọng số cho L1 bbox loss.
-        weight_giou: Trọng số cho GIoU loss.
-        eos_coef: Trọng số giảm cho lớp "no object" trong cross-entropy
-                  (vì đa số queries không khớp với object nào).
     """
 
     def __init__(
         self,
         num_classes: int,
         matcher: nn.Module,
-        weight_ce: float = 1.0,
-        weight_bbox: float = 5.0,
-        weight_giou: float = 2.0,
+        weight_dict: dict[str, float] | None = None,
         eos_coef: float = 0.1,
+        aux_loss: bool = False,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.matcher = matcher
-        self.weight_ce = weight_ce
-        self.weight_bbox = weight_bbox
-        self.weight_giou = weight_giou
+        self.aux_loss = aux_loss
+
+        weight_dict = weight_dict or {
+            "loss_ce": 1,
+            "loss_bbox": 5,
+            "loss_giou": 2
+        }
+        self.weight_dict = weight_dict
 
         empty_weight = torch.ones(num_classes + 1)
         empty_weight[-1] = eos_coef
         self.register_buffer("empty_weight", empty_weight)
 
+    def loss_labels(
+        self,
+        outputs: dict[str, Tensor],
+        targets: list[dict[str, Tensor]],
+        indices: list[tuple[Tensor, Tensor]],
+    ) -> dict[str, Tensor]:
+        """Tính classification loss."""
+        src_logits = outputs["pred_logits"]
+
+        idx = self._get_src_permutation_idx(indices)
+        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        target_classes = torch.full(
+            src_logits.shape[:2],
+            self.num_classes,
+            dtype=torch.int64,
+            device=src_logits.device
+        )
+        target_classes[idx] = target_classes_o
+
+        loss_ce = F.cross_entropy(
+            src_logits.transpose(1, 2),
+            target_classes,
+            self.empty_weight,
+        )
+
+        losses = {"loss_ce": loss_ce}
+        return losses
+
+    def loss_boxes(
+        self,
+        outputs: dict[str, Tensor],
+        targets: list[dict[str, Tensor]],
+        indices: list[tuple[Tensor, Tensor]],
+    ) -> dict[str, Tensor]:
+        """Tính bbox loss (L1 + GIoU)."""
+        idx = self._get_src_permutation_idx(indices)
+        src_boxes = outputs["pred_boxes"][idx]
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+
+        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="mean")
+        loss_giou = 1 - torch.diag(generalized_box_iou(
+            cxcywh_to_xyxy(src_boxes),
+            cxcywh_to_xyxy(target_boxes)
+        )).mean()
+
+        losses = {
+            "loss_bbox": loss_bbox,
+            "loss_giou": loss_giou,
+        }
+        return losses
+
+    def _get_src_permutation_idx(self, indices: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, Tensor]:
+        batch_idx = torch.cat([
+            torch.full_like(src, i) for i, (src, _) in enumerate(indices)
+        ])
+        src_idx = torch.cat([src for (src, _) in indices])
+        return batch_idx, src_idx
+
+    def _get_tgt_permutation_idx(self, indices: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, Tensor]:
+        batch_idx = torch.cat([
+            torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)
+        ])
+        tgt_idx = torch.cat([tgt for (_, tgt) in indices])
+        return batch_idx, tgt_idx
+
     def forward(
         self,
         outputs: dict[str, Tensor],
         targets: list[dict[str, Tensor]],
+        indices: list[tuple[Tensor, Tensor]] | None = None,
     ) -> dict[str, Tensor]:
-        """Tính tổng loss cho một batch.
+        """Tính tổng loss cho một batch."""
+        if indices is None:
+            indices = self.matcher(outputs, targets)
 
-        Args:
-            outputs: Dict chứa:
-                - "pred_logits": (batch, num_queries, num_classes + 1)
-                - "pred_boxes":  (batch, num_queries, 4) ở định dạng cxcywh chuẩn hoá.
-            targets: Danh sách dict cho mỗi ảnh, mỗi dict chứa:
-                - "labels": (num_objects,)
-                - "boxes":  (num_objects, 4) ở định dạng cxcywh chuẩn hoá.
+        losses = {}
+        losses.update(self.loss_labels(outputs, targets, indices))
+        losses.update(self.loss_boxes(outputs, targets, indices))
 
-        Returns:
-            Dict chứa từng thành phần loss và tổng loss.
-        """
-        # TODO: Triển khai chi tiết khi matcher (Hungarian) đã hoàn chỉnh.
-        #   1. Gọi self.matcher(outputs, targets) để lấy danh sách cặp (pred_idx, tgt_idx).
-        #   2. Tính classification loss bằng cross-entropy có trọng số empty_weight.
-        #   3. Tính L1 loss trên bbox.
-        #   4. Tính GIoU loss.
-        #   5. Trả về dict {"ce": ..., "bbox": ..., "giou": ..., "total": ...}.
-        raise NotImplementedError(
-            "SetCriterion cần Hungarian matcher hoàn chỉnh. Xem TODO bên trên."
-        )
+        if self.aux_loss and "aux_outputs" in outputs:
+            for i, aux_outputs in enumerate(outputs["aux_outputs"]):
+                aux_indices = self.matcher(aux_outputs, targets)
+                aux_losses = {}
+                aux_losses.update(self.loss_labels(aux_outputs, targets, aux_indices))
+                aux_losses.update(self.loss_boxes(aux_outputs, targets, aux_indices))
+                aux_losses = {f"{k}_aux{i}": v for k, v in aux_losses.items()}
+                losses.update(aux_losses)
+
+        return losses
