@@ -24,7 +24,7 @@ CLASSES = ["cat", "dog", "horse", "cow", "bird", "sheep"]
 
 # Số ảnh tối đa mỗi lớp (giảm xuống để dataset nhỏ, đủ cho học tập)
 # ~150 ảnh/lớp × 6 lớp ≈ 600–900 ảnh tổng (sau khi lọc trùng)
-MAX_SAMPLES_PER_CLASS = 150
+MAX_SAMPLES_PER_CLASS = 1000
 
 # Tỷ lệ chia mặc định — có thể ghi đè qua CLI --split <train> <val> <test>
 DEFAULT_SPLIT = (0.70, 0.15, 0.15)
@@ -208,13 +208,13 @@ def stratified_split(
 # BƯỚC 4 — XUẤT FILE ẢNH + COCO JSON
 # ─────────────────────────────────────────────────────────────────────────────
 
-CLASS_TO_ID = {cls: i for i, cls in enumerate(CLASSES)}   # 0-indexed
+CLASS_TO_ID = {cls: i + 1 for i, cls in enumerate(CLASSES)}  # 1-indexed (COCO standard)
 
 
 def build_coco_json(samples: list[fo.Sample], split_name: str) -> dict:
     """Tạo COCO-format dict từ danh sách sample."""
     categories = [
-        {"id": i, "name": cls, "supercategory": "animal"}
+        {"id": i + 1, "name": cls, "supercategory": "animal"}
         for i, cls in enumerate(CLASSES)
     ]
 
@@ -350,14 +350,16 @@ def main():
         export_split(split_samples, split_name)
 
     # Thống kê cuối
-    print("\n✅ Hoàn tất! Thống kê:")
+    print("\nHoàn tất! Thống kê:")
     for split_name in ("train", "val", "test"):
         json_path = ANNOT_DIR / f"{split_name}.json"
         with open(json_path) as f:
             d = json.load(f)
         cls_count = defaultdict(int)
+        ID_TO_CLASS = {v: k for k, v in CLASS_TO_ID.items()}
+
         for a in d["annotations"]:
-            cls_count[CLASSES[a["category_id"]]] += 1
+            cls_count[ID_TO_CLASS[a["category_id"]]] += 1
         print(f"\n   [{split_name}]  {len(d['images'])} ảnh | {len(d['annotations'])} bbox")
         for cls in CLASSES:
             print(f"      {cls:10s}: {cls_count[cls]} bbox")
