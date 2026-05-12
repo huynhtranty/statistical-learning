@@ -50,7 +50,7 @@ def print_split_stats(split: str):
     print(f"     Tổng bbox  : {n_annots}")
     print(f"     {'Lớp':<12} {'Ảnh':>6} {'BBox':>6}")
     print(f"     {'─'*12} {'─'*6} {'─'*6}")
-    for cls_id in range(len(classes)):
+    for cls_id in sorted(classes.keys()):
         cname = classes[cls_id]
         print(f"     {cname:<12} {len(cls_img[cname]):>6} {cls_bbox[cname]:>6}")
 
