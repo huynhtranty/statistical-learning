@@ -51,6 +51,7 @@ class YOLOLoss(nn.Module):
         num_classes: int,
         num_anchors: int = 3,
         image_size: int = 640,
+        lambda_noobj: float = 0.1,
         lambda_obj: float = 1.0,
         lambda_cls: float = 1.0,
         lambda_box: float = 5.0,
@@ -59,12 +60,13 @@ class YOLOLoss(nn.Module):
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         self.image_size = float(image_size)
+        self.lambda_noobj = lambda_noobj
         self.lambda_obj = lambda_obj
         self.lambda_cls = lambda_cls
         self.lambda_box = lambda_box
 
-        self.bce_obj = nn.BCEWithLogitsLoss(reduction="mean")
-        self.bce_cls = nn.BCEWithLogitsLoss(reduction="mean")
+        self.bce_obj = nn.BCEWithLogitsLoss(reduction="none")
+        self.bce_cls = nn.BCEWithLogitsLoss(reduction="none")
         self.box_loss_fn = nn.SmoothL1Loss(reduction="mean")
 
     def forward(
@@ -95,6 +97,7 @@ class YOLOLoss(nn.Module):
             pred_cls = pred[:, :, 5:, :, :]     # logits
 
             obj_target = torch.zeros_like(pred_obj)
+            pos_mask = torch.zeros_like(pred_obj, dtype=torch.bool)
             cls_target = torch.zeros_like(pred_cls)
 
             for b in range(batch_size):
@@ -133,6 +136,7 @@ class YOLOLoss(nn.Module):
                 # Minimal assignment: mark all anchors at responsible cell positive.
                 for a in range(self.num_anchors):
                     obj_target[b, a, gj, gi] = 1.0
+                    pos_mask[b, a, gj, gi] = True
                     cls_target[b, a, labels, gj, gi] = 1.0
 
                     pred_xywh = pred_boxes[b, a, :, gj, gi].transpose(0, 1)
@@ -146,8 +150,28 @@ class YOLOLoss(nn.Module):
 
                 total_pos += int(gi.numel()) * self.num_anchors
 
-            obj_loss = obj_loss + self.bce_obj(pred_obj, obj_target)
-            cls_loss = cls_loss + self.bce_cls(pred_cls, cls_target)
+            obj_elementwise = self.bce_obj(pred_obj, obj_target)
+            pos_count = pos_mask.sum().item()
+            neg_mask = ~pos_mask
+            neg_count = neg_mask.sum().item()
+
+            if pos_count > 0:
+                obj_pos = obj_elementwise[pos_mask].mean()
+            else:
+                obj_pos = torch.zeros((), device=device)
+
+            if neg_count > 0:
+                obj_neg = obj_elementwise[neg_mask].mean()
+            else:
+                obj_neg = torch.zeros((), device=device)
+
+            obj_loss = obj_loss + obj_pos + self.lambda_noobj * obj_neg
+
+            # Class loss should be computed only on positive anchors/cells.
+            # Broadcast pos mask to class dimension: (B, A, C, H, W)
+            cls_pos_mask = pos_mask.unsqueeze(2).expand_as(pred_cls)
+            if cls_pos_mask.any():
+                cls_loss = cls_loss + self.bce_cls(pred_cls, cls_target)[cls_pos_mask].mean()
 
         norm = max(1, num_scales)
         if total_pos > 0:

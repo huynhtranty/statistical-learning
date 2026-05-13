@@ -296,15 +296,19 @@ def _decode_yolo_single_scale(
 
                 pred_cls = int(np.argmax(cls_probs))
 
-                # Convert tx,ty,tw,th to pixel coords
+                # Decode consistent with current YOLO training target parameterization:
+                # tx, ty in-cell offsets via sigmoid; tw, th normalized via sigmoid.
                 xc = (cx + 1 / (1 + np.exp(-tx))) * stride
                 yc = (cy + 1 / (1 + np.exp(-ty))) * stride
-                bw = float(np.exp(tw)) * stride * 4
-                bh = float(np.exp(th)) * stride * 4
+                bw = float(1 / (1 + np.exp(-tw))) * input_size
+                bh = float(1 / (1 + np.exp(-th))) * input_size
+
+                x1 = xc - bw / 2
+                y1 = yc - bh / 2
 
                 # Remove padding & scale back to original
-                x = (xc - pad_x) / scale
-                y = (yc - pad_y) / scale
+                x = (x1 - pad_x) / scale
+                y = (y1 - pad_y) / scale
                 w = bw / scale
                 h = bh / scale
 
