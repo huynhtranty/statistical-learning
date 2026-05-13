@@ -7,13 +7,8 @@
 | Nguồn | COCO 2017 (train + val) |
 | Công cụ tải | FiftyOne Zoo |
 | Số lớp | 6 |
-<<<<<<< HEAD
-| Ảnh / lớp (tối đa) | 150 |
-| Tổng ảnh ước tính | 600 – 850 |
-=======
-| Ảnh / lớp (tối đa) | 1000 |
-| Tổng ảnh ước tính | 6000 |
->>>>>>> origin/main
+| Ảnh / lớp (tối đa) | 500 |
+| Tổng ảnh ước tính | 5000 |
 | Seed | 42 |
 
 ## Các lớp đối tượng
@@ -25,6 +20,10 @@
 3  cow
 4  bird
 5  sheep
+6  elephant
+7  bear
+8  zebra
+9  giraffe
 ```
 
 Tất cả thuộc nhóm **động vật** trong COCO — đủ đa dạng về hình dạng, kích thước,
