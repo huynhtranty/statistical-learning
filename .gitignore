@@ -108,3 +108,5 @@ Desktop.ini
 models/yolo/checkpoints/
 models/yolo/checkpoints/
 *.pt
+
+.cursor/
