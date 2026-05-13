@@ -1,66 +1,120 @@
-# Data
+# Dataset — COCO 2017 Animal Subset
 
-This directory holds all dataset assets. Image files and raw archives are gitignored — only structure, class definitions, and small metadata files are tracked.
+## Tổng quan
 
-## Layout
+| Thuộc tính | Giá trị |
+|---|---|
+| Nguồn | COCO 2017 (train + val) |
+| Công cụ tải | FiftyOne Zoo |
+| Số lớp | 6 |
+| Ảnh / lớp (tối đa) | 1000 |
+| Tổng ảnh ước tính | 6000 |
+| Seed | 42 |
+
+## Các lớp đối tượng
+
+```
+0  cat
+1  dog
+2  horse
+3  cow
+4  bird
+5  sheep
+```
+
+Tất cả thuộc nhóm **động vật** trong COCO — đủ đa dạng về hình dạng, kích thước,
+và ngữ cảnh xuất hiện để đánh giá công bằng giữa các kiến trúc.
+
+## Cấu trúc thư mục
 
 ```
 data/
-├── raw/                # Untouched downloads (archives, original splits). Gitignored.
-└── processed/
-    ├── images/
-    │   ├── train/      # Training images (640x640 after preprocessing)
-    │   ├── val/        # Validation images
-    │   └── test/       # Test images (held-out, used only for final eval)
-    └── annotations/
-        ├── classes.txt # One class name per line — see "Classes" below
-        ├── train.json  # COCO-format annotations (created by scripts)
-        ├── val.json
-        └── test.json
+├── raw/                        ← ảnh gốc COCO (gitignored)
+│   ├── train/
+│   └── validation/
+├── images/
+│   ├── train/
+│   ├── val/
+│   └── test/
+├── labels/                     ← YOLO txt (tạo bởi scripts/)
+│   ├── train/
+│   ├── val/
+│   └── test/
+├── voc_annotations/            ← Pascal VOC XML (tạo bởi scripts/)
+├── annotations/
+│   ├── classes.txt
+│   ├── train.json              ← COCO format (nguồn gốc)
+│   ├── val.json
+│   └── test.json
+└── source/                     ← code Python
+    ├── prepare_animal_dataset.py
+    └── scripts/
+        ├── convert_coco_to_yolo.py
+        ├── convert_coco_to_voc.py
+        └── dataset_stats.py
 ```
 
-## Master annotation format
+## Hướng dẫn sử dụng
 
-**COCO JSON** is the source of truth. Per-model converters in `scripts/` derive YOLO `.txt` and Pascal VOC `.xml` formats from it as needed:
+### 1. Cài đặt dependencies
 
-- `scripts/convert_coco_to_yolo.py` → YOLO format for ultralytics training
-- `scripts/convert_coco_to_voc.py` → Pascal VOC XML
+```bash
+pip install kaggle ultralytics pycocotools scikit-learn tqdm
+```
 
-## Classes
+### 2. Tải và xử lý dataset
 
-Defined in `processed/annotations/classes.txt` (one per line). Initial placeholder set (5 classes — replace with your final selection):
+```bash
+# Dùng tỷ lệ mặc định 70/15/15
+python data/source/prepare_animal_dataset.py
 
-1. person
-2. car
-3. bicycle
-4. dog
-5. cat
+# Tuỳ chỉnh tỷ lệ (train val test, tổng phải = 1.0)
+python data/source/prepare_animal_dataset.py --split 0.8 0.1 0.1
+python data/source/prepare_animal_dataset.py --split 0.7 0.2 0.1
+```
 
-The final dataset must include **at least 5 classes**. Class IDs in COCO JSON are 0-indexed and must match the line order in `classes.txt`.
+Script sẽ:
+- Tải COCO 2017 train + val qua FiftyOne (chỉ các lớp động vật đã chọn)
+- Lọc và cân bằng theo lớp dominant
+- Chia stratified theo tỷ lệ đã chọn
+- Copy ảnh vào `data/images/{split}/`
+- Ghi COCO JSON vào `data/annotations/{split}.json`
+- Ghi `classes.txt`
 
-## Dataset source and license
+### 3. Convert sang YOLO format (cho YOLOv8/v11)
 
-> **TODO**: Fill in once dataset is selected. Capture:
-> - Dataset name and download URL
-> - License (e.g. CC-BY 4.0, custom non-commercial)
-> - Citation / paper reference
-> - Any redistribution constraints
+```bash
+python data/source/scripts/convert_coco_to_yolo.py
+```
 
-Candidate datasets under consideration: COCO subset, Pascal VOC 2012, Open Images V7 subset.
+### 4. Convert sang Pascal VOC (cho Faster R-CNN / Detectron2)
 
-## Stats
+```bash
+python data/source/scripts/convert_coco_to_voc.py
+```
 
-> **TODO**: After dataset is finalized, fill in:
-> - Total images: N
-> - Total annotations: N
-> - Per-class instance counts
-> - Image size distribution
+> **Lưu ý:** DETR dùng trực tiếp COCO JSON, không cần convert.
 
-## Split methodology
+### 5. Xem thống kê dataset
 
-- **Ratios**: 70% train / 15% val / 15% test
-- **Stratification**: per class, so each split contains examples of every class proportional to the full dataset
-- **Random seed**: 42 (fixed across all models)
-- **Implementation**: `scripts/split_dataset.py` produces `train.json`, `val.json`, `test.json` from a single COCO file
+```bash
+python data/source/scripts/dataset_stats.py
+```
 
-All three models (Faster R-CNN, YOLO, DETR) consume the **same** split — this is required for fair comparison.
+### 6. Train YOLO (ví dụ)
+
+```bash
+yolo train data=animal_dataset.yaml model=yolo11s.pt epochs=50 imgsz=640
+```
+
+## Phương pháp chia dữ liệu
+
+- **Tỷ lệ (mặc định):** 70 / 15 / 15
+- **Stratified** theo lớp dominant của mỗi ảnh → mỗi split đều có đủ các lớp
+- **Random seed:** 42 (cố định cho cả 3 mô hình Faster R-CNN / YOLO / DETR)
+- Tất cả 3 mô hình dùng **cùng 1 split** → so sánh công bằng
+
+## License
+
+Dữ liệu từ COCO 2017 — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Xem chi tiết tại: https://cocodataset.org/#termsofuse
