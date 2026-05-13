@@ -185,7 +185,7 @@ def main():
     model = build_yolo(num_classes=num_classes)
     model.to(device)
 
-    criterion = YOLOLoss(num_classes=num_classes, num_anchors=3)
+    criterion = YOLOLoss(num_classes=num_classes, num_anchors=3, image_size=args.img_size)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 

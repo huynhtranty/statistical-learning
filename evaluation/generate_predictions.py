@@ -38,12 +38,11 @@ def parse_args():
 
 def load_yolo_model(weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
     """Load YOLO model."""
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent / ".." / "models"))
-    from yolo.model import YOLOModel
-    model = YOLOModel(num_classes=num_classes)
+    from models.yolo.model import build_yolo
+    model = build_yolo(num_classes=num_classes)
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
+    model.load_state_dict(state)
     return model.to(device)
 
 
@@ -93,26 +92,43 @@ def predict_yolo(model: nn.Module, image_tensor: torch.Tensor, device: str,
     """Run prediction with YOLO model."""
     model.eval()
     with torch.no_grad():
-        output = model(image_tensor.unsqueeze(0).to(device))
-    
+        outputs = model(image_tensor.unsqueeze(0).to(device))
+
     predictions = []
-    if isinstance(output, torch.Tensor):
-        output = output.squeeze().cpu().numpy()
-        
-        # Simple threshold-based detection (simplified)
-        # In real YOLO, you'd need NMS and proper post-processing
-        if output.ndim == 3:
-            for batch in output:
-                for h in range(batch.shape[1]):
-                    for w in range(batch.shape[2]):
-                        detection = batch[:, h, w]
-                        max_conf = detection[-1]  # confidence
-                        if max_conf > conf_threshold:
-                            predictions.append({
-                                "bbox": [w * 8, h * 8, 32, 32],  # Simplified
-                                "score": float(max_conf),
-                                "class": int(detection[:-1].argmax())
-                            })
+    if not isinstance(outputs, list):
+        return predictions
+
+    # YOLO head output: list[(B, A*(5+C), H, W)] at multiple scales.
+    for out in outputs:
+        bsz, ch, h, w = out.shape
+        if bsz != 1:
+            continue
+        num_classes = ch // 3 - 5
+        pred = out.view(1, 3, 5 + num_classes, h, w)[0]  # (A, 5+C, H, W)
+
+        obj = pred[:, 4, :, :].sigmoid()
+        cls = pred[:, 5:, :, :].sigmoid()
+        box = pred[:, :4, :, :].sigmoid()
+        stride = 640 / float(h)
+
+        for a in range(pred.shape[0]):
+            scores_map, labels_map = (obj[a].unsqueeze(0) * cls[a]).max(dim=0)
+            ys, xs = torch.where(scores_map > conf_threshold)
+            for y, x in zip(ys.tolist(), xs.tolist()):
+                score = float(scores_map[y, x])
+                label = int(labels_map[y, x])
+
+                tx, ty, tw, th = box[a, :, y, x]
+                cx = (x + float(tx)) * stride
+                cy = (y + float(ty)) * stride
+                bw = max(1.0, float(tw) * 640.0)
+                bh = max(1.0, float(th) * 640.0)
+
+                predictions.append({
+                    "bbox": [float(cx - bw / 2.0), float(cy - bh / 2.0), float(bw), float(bh)],
+                    "score": score,
+                    "class": label,
+                })
     return predictions
 
 

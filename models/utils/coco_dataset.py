@@ -22,7 +22,6 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
-import numpy as np
 
 
 # Default paths từ project root
@@ -59,6 +58,7 @@ class CocoDetection(Dataset):
             self.coco_data = json.load(f)
 
         self.images = self.coco_data["images"]
+        self.cat_id_to_idx = self._build_category_mapping()
         self.img_id_to_annotations = self._build_img_id_map()
 
         self.transform = transform  # model handles resize internally
@@ -72,6 +72,18 @@ class CocoDetection(Dataset):
             img_id_map[img_id].append(ann)
         return img_id_map
 
+    def _build_category_mapping(self) -> dict[int, int]:
+        """Build COCO category_id -> zero-based class index mapping."""
+        cat_to_name = {
+            int(cat["id"]): str(cat["name"])
+            for cat in self.coco_data.get("categories", [])
+        }
+        return {
+            cat_id: self.class_to_idx[name]
+            for cat_id, name in cat_to_name.items()
+            if name in self.class_to_idx
+        }
+
     def __len__(self) -> int:
         return len(self.images)
 
@@ -81,6 +93,7 @@ class CocoDetection(Dataset):
         img_path = self.img_folder / img_info["file_name"]
 
         image = Image.open(img_path).convert("RGB")
+        orig_w, orig_h = image.size
 
         # Resize all images to consistent img_size to ensure torch.stack works in collate_fn
         image = image.resize((self.img_size, self.img_size), Image.BILINEAR)
@@ -91,14 +104,21 @@ class CocoDetection(Dataset):
         labels = []
 
         for ann in annotations:
-            cat_id = ann["category_id"]
-            if cat_id >= len(self.classes):
+            cat_id = int(ann["category_id"])
+            if cat_id not in self.cat_id_to_idx:
                 continue
 
             x, y, w, h = ann["bbox"]
+            sx = self.img_size / max(float(orig_w), 1.0)
+            sy = self.img_size / max(float(orig_h), 1.0)
+            x = float(x) * sx
+            y = float(y) * sy
+            w = float(w) * sx
+            h = float(h) * sy
+
             # torchvision Faster R-CNN expects xyxy format
             boxes.append([x, y, x + w, y + h])
-            labels.append(cat_id)
+            labels.append(self.cat_id_to_idx[cat_id])
 
         target = {
             "image_id": torch.tensor([img_id], dtype=torch.int64),
@@ -118,11 +138,7 @@ def collate_fn(batch: list) -> tuple:
 
     for img, target in batch:
         if not isinstance(img, torch.Tensor):
-            img_pil = img
-            w, h = img_pil.size
-            if w != 640 or h != 640:
-                img_pil = img_pil.resize((640, 640), Image.BILINEAR)
-            img_tensor = F.to_tensor(img_pil)
+            img_tensor = F.to_tensor(img)
             images.append(img_tensor)
         else:
             images.append(img)

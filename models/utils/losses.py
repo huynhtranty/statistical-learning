@@ -50,6 +50,7 @@ class YOLOLoss(nn.Module):
         self,
         num_classes: int,
         num_anchors: int = 3,
+        image_size: int = 640,
         lambda_obj: float = 1.0,
         lambda_cls: float = 1.0,
         lambda_box: float = 5.0,
@@ -57,13 +58,14 @@ class YOLOLoss(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.num_anchors = num_anchors
+        self.image_size = float(image_size)
         self.lambda_obj = lambda_obj
         self.lambda_cls = lambda_cls
         self.lambda_box = lambda_box
 
         self.bce_obj = nn.BCEWithLogitsLoss(reduction="mean")
         self.bce_cls = nn.BCEWithLogitsLoss(reduction="mean")
-        self.loss_giou = nn.L1Loss(reduction="mean")
+        self.box_loss_fn = nn.SmoothL1Loss(reduction="mean")
 
     def forward(
         self,
@@ -72,47 +74,89 @@ class YOLOLoss(nn.Module):
         target_labels: list[Tensor],
     ) -> Tensor:
         device = predictions[0].device
-        
-        obj_loss = torch.zeros(1, device=device, requires_grad=True)
-        cls_loss = torch.zeros(1, device=device, requires_grad=True)
-        box_loss = torch.zeros(1, device=device, requires_grad=True)
-
         batch_size = predictions[0].shape[0]
         num_scales = len(predictions)
-        
+        img_size = self.image_size
+
+        obj_loss = torch.zeros((), device=device)
+        cls_loss = torch.zeros((), device=device)
+        box_loss = torch.zeros((), device=device)
+        total_pos = 0
+
         for pred in predictions:
-            # pred shape: (batch, num_anchors * (5 + num_classes), H, W)
-            channels = self.num_anchors * (5 + self.num_classes)
-            
-            if pred.shape[1] == channels:
-                # Reshape to (batch, num_anchors, 5+num_classes, H, W)
-                pred = pred.view(batch_size, self.num_anchors, 5 + self.num_classes, pred.shape[2], pred.shape[3])
-                
-                # Get components
-                pred_boxes = pred[:, :, :4, :, :]      # tx, ty, tw, th
-                pred_obj = pred[:, :, 4, :, :]          # objectness logits
-                pred_cls = pred[:, :, 5:, :, :]         # class logits
-                
-                # Objectness loss: BCE on raw logits (can be negative/positive)
-                obj_loss = obj_loss + F.binary_cross_entropy_with_logits(
-                    pred_obj, torch.zeros_like(pred_obj), reduction='mean'
-                )
-                
-                # Classification loss: Cross entropy on raw logits
-                # Flatten: (batch, num_anchors*H*W, num_classes)
-                pred_cls_flat = pred_cls.permute(0, 1, 3, 4, 2).reshape(-1, self.num_classes)
-                target_cls = torch.zeros(pred_cls_flat.shape[0], dtype=torch.long, device=device)
-                cls_loss = cls_loss + F.cross_entropy(pred_cls_flat, target_cls, reduction='mean')
-                
-                # Box loss: L1 loss on bbox predictions
-                box_loss = box_loss + F.l1_loss(pred_boxes, torch.zeros_like(pred_boxes), reduction='mean')
+            _, channels, h, w = pred.shape
+            expected = self.num_anchors * (5 + self.num_classes)
+            if channels != expected:
+                continue
 
+            pred = pred.view(batch_size, self.num_anchors, 5 + self.num_classes, h, w)
+            pred_boxes = pred[:, :, :4, :, :]   # tx, ty, tw, th
+            pred_obj = pred[:, :, 4, :, :]      # logits
+            pred_cls = pred[:, :, 5:, :, :]     # logits
+
+            obj_target = torch.zeros_like(pred_obj)
+            cls_target = torch.zeros_like(pred_cls)
+
+            for b in range(batch_size):
+                boxes = target_boxes[b]
+                labels = target_labels[b]
+                if boxes.numel() == 0:
+                    continue
+
+                boxes = boxes.to(device)
+                labels = labels.to(device)
+
+                cx = ((boxes[:, 0] + boxes[:, 2]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
+                cy = ((boxes[:, 1] + boxes[:, 3]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
+                bw = ((boxes[:, 2] - boxes[:, 0]) / img_size).clamp(1e-6, 1.0)
+                bh = ((boxes[:, 3] - boxes[:, 1]) / img_size).clamp(1e-6, 1.0)
+
+                gx = cx * w
+                gy = cy * h
+                gi = torch.floor(gx).long().clamp(0, w - 1)
+                gj = torch.floor(gy).long().clamp(0, h - 1)
+                tx = gx - gi.float()
+                ty = gy - gj.float()
+
+                valid = (labels >= 0) & (labels < self.num_classes)
+                if valid.sum() == 0:
+                    continue
+
+                gi = gi[valid]
+                gj = gj[valid]
+                tx = tx[valid]
+                ty = ty[valid]
+                bw = bw[valid]
+                bh = bh[valid]
+                labels = labels[valid]
+
+                # Minimal assignment: mark all anchors at responsible cell positive.
+                for a in range(self.num_anchors):
+                    obj_target[b, a, gj, gi] = 1.0
+                    cls_target[b, a, labels, gj, gi] = 1.0
+
+                    pred_xywh = pred_boxes[b, a, :, gj, gi].transpose(0, 1)
+                    pred_xy = pred_xywh[:, :2].sigmoid()
+                    pred_wh = pred_xywh[:, 2:].sigmoid()
+                    tgt_xywh = torch.stack((tx, ty, bw, bh), dim=1)
+                    box_loss = box_loss + self.box_loss_fn(
+                        torch.cat((pred_xy, pred_wh), dim=1),
+                        tgt_xywh,
+                    )
+
+                total_pos += int(gi.numel()) * self.num_anchors
+
+            obj_loss = obj_loss + self.bce_obj(pred_obj, obj_target)
+            cls_loss = cls_loss + self.bce_cls(pred_cls, cls_target)
+
+        norm = max(1, num_scales)
+        if total_pos > 0:
+            box_loss = box_loss / float(total_pos)
         total_loss = (
-            self.lambda_obj * obj_loss / num_scales +
-            self.lambda_cls * cls_loss / num_scales +
-            self.lambda_box * box_loss / num_scales
+            self.lambda_obj * (obj_loss / norm) +
+            self.lambda_cls * (cls_loss / norm) +
+            self.lambda_box * box_loss
         )
-
         return total_loss
 
 
