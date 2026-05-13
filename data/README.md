@@ -59,7 +59,7 @@ data/
 ### 1. Cài đặt dependencies
 
 ```bash
-pip install fiftyone ultralytics pycocotools scikit-learn tqdm
+pip install kaggle ultralytics pycocotools scikit-learn tqdm
 ```
 
 ### 2. Tải và xử lý dataset
