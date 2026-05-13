@@ -88,8 +88,8 @@ def preprocess_image(image_path: Path, input_size: int = 640) -> torch.Tensor:
 
 
 def predict_yolo(model: nn.Module, image_tensor: torch.Tensor, device: str,
-                 conf_threshold: float = 0.5) -> list[dict]:
-    """Run prediction with YOLO model."""
+                 conf_threshold: float = 0.5, input_size: int = 640) -> list[dict]:
+    """Run prediction with YOLO model. Output bbox in input-image-space (xywh)."""
     model.eval()
     with torch.no_grad():
         outputs = model(image_tensor.unsqueeze(0).to(device))
@@ -109,26 +109,31 @@ def predict_yolo(model: nn.Module, image_tensor: torch.Tensor, device: str,
         obj = pred[:, 4, :, :].sigmoid()
         cls = pred[:, 5:, :, :].sigmoid()
         box = pred[:, :4, :, :].sigmoid()
-        stride = 640 / float(h)
+        stride_x = input_size / float(w)
+        stride_y = input_size / float(h)
 
-        for a in range(pred.shape[0]):
-            scores_map, labels_map = (obj[a].unsqueeze(0) * cls[a]).max(dim=0)
-            ys, xs = torch.where(scores_map > conf_threshold)
-            for y, x in zip(ys.tolist(), xs.tolist()):
-                score = float(scores_map[y, x])
-                label = int(labels_map[y, x])
+        scores_full = obj.unsqueeze(1) * cls  # (A, C, H, W)
+        best_score, best_cls = scores_full.max(dim=1)  # (A, H, W)
+        keep = best_score > conf_threshold
+        if not keep.any():
+            continue
+        a_idx, y_idx, x_idx = torch.where(keep)
 
-                tx, ty, tw, th = box[a, :, y, x]
-                cx = (x + float(tx)) * stride
-                cy = (y + float(ty)) * stride
-                bw = max(1.0, float(tw) * 640.0)
-                bh = max(1.0, float(th) * 640.0)
+        for a, y, x in zip(a_idx.tolist(), y_idx.tolist(), x_idx.tolist()):
+            score = float(best_score[a, y, x])
+            label = int(best_cls[a, y, x])
 
-                predictions.append({
-                    "bbox": [float(cx - bw / 2.0), float(cy - bh / 2.0), float(bw), float(bh)],
-                    "score": score,
-                    "class": label,
-                })
+            tx, ty, tw, th = box[a, :, y, x]
+            cx = (x + float(tx)) * stride_x
+            cy = (y + float(ty)) * stride_y
+            bw = float(tw) * input_size
+            bh = float(th) * input_size
+
+            predictions.append({
+                "bbox": [float(cx - bw / 2.0), float(cy - bh / 2.0), float(bw), float(bh)],
+                "score": score,
+                "class": label,
+            })
     return predictions
 
 
@@ -183,6 +188,7 @@ def predict_model(model: nn.Module, model_type: str, image_tensor: torch.Tensor,
     """Run prediction based on model type."""
     if model_type == "yolo":
         return predict_yolo(model, image_tensor, device, conf_threshold)
+    # Note: predict_yolo defaults input_size=640. Đồng bộ với preprocess_image (resize 640).
     elif model_type == "faster_rcnn":
         return predict_faster_rcnn(model, image_tensor, device, conf_threshold)
     elif model_type == "detr":

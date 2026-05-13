@@ -40,10 +40,10 @@ class FasterRCNNLoss(nn.Module):
 class YOLOLoss(nn.Module):
     """Loss cho kiến trúc YOLO-style.
 
-    Bao gồm ba thành phần chính:
-    1. Objectness loss: BCE — dự đoán ô nào chứa vật thể.
-    2. Classification loss: BCE hoặc CE — phân loại lớp vật thể.
-    3. Bounding box regression loss: CIoU/GIoU — hồi quy toạ độ box.
+    Cải tiến so với baseline:
+    - Focal Loss cho objectness (giảm dominance của vô vàn negative cells).
+    - Scale-aware assignment: mỗi GT box chỉ gán vào scale phù hợp với kích thước.
+    - Box loss = 1 - GIoU thay vì SmoothL1 trên (tx,ty,bw,bh) — gradient mạnh hơn.
     """
 
     def __init__(
@@ -51,10 +51,12 @@ class YOLOLoss(nn.Module):
         num_classes: int,
         num_anchors: int = 3,
         image_size: int = 640,
-        lambda_noobj: float = 0.1,
+        lambda_noobj: float = 1.0,
         lambda_obj: float = 1.0,
-        lambda_cls: float = 1.0,
+        lambda_cls: float = 0.5,
         lambda_box: float = 5.0,
+        focal_alpha: float = 0.25,
+        focal_gamma: float = 2.0,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -64,10 +66,35 @@ class YOLOLoss(nn.Module):
         self.lambda_obj = lambda_obj
         self.lambda_cls = lambda_cls
         self.lambda_box = lambda_box
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
 
         self.bce_obj = nn.BCEWithLogitsLoss(reduction="none")
         self.bce_cls = nn.BCEWithLogitsLoss(reduction="none")
-        self.box_loss_fn = nn.SmoothL1Loss(reduction="mean")
+
+    @staticmethod
+    def _focal_factor(logits: Tensor, targets: Tensor, alpha: float, gamma: float) -> Tensor:
+        """Focal weighting factor: alpha_t * (1 - p_t)^gamma."""
+        p = torch.sigmoid(logits)
+        p_t = p * targets + (1 - p) * (1 - targets)
+        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        return alpha_t * (1 - p_t).pow(gamma)
+
+    def _assign_scale_for_box(self, bw_norm: Tensor, bh_norm: Tensor, num_scales: int) -> Tensor:
+        """Heuristic gán mỗi GT vào 1 scale dựa trên area chuẩn hoá [0,1].
+        Convention: predictions[0] = scale to nhất (P3, stride 8), [-1] = nhỏ nhất (P5, stride 32).
+        - Object nhỏ (area < 0.05^2) → scale 0 (P3, lưới to).
+        - Object vừa → scale 1.
+        - Object lớn → scale cuối cùng.
+        """
+        area = bw_norm * bh_norm
+        # Ngưỡng: small <0.0025 (0.05*0.05), medium <0.05 (0.22*0.22)
+        scale_idx = torch.where(
+            area < 0.0025, torch.zeros_like(area, dtype=torch.long),
+            torch.where(area < 0.05, torch.ones_like(area, dtype=torch.long),
+                        torch.full_like(area, num_scales - 1, dtype=torch.long))
+        )
+        return scale_idx.clamp(0, num_scales - 1)
 
     def forward(
         self,
@@ -85,14 +112,28 @@ class YOLOLoss(nn.Module):
         box_loss = torch.zeros((), device=device)
         total_pos = 0
 
-        for pred in predictions:
+        # Pre-compute scale assignment cho từng GT box mỗi batch image
+        per_image_assignments: list[Tensor] = []
+        for b in range(batch_size):
+            boxes = target_boxes[b]
+            if boxes.numel() == 0:
+                per_image_assignments.append(torch.empty(0, dtype=torch.long, device=device))
+                continue
+            boxes = boxes.to(device)
+            bw_norm = ((boxes[:, 2] - boxes[:, 0]) / img_size).clamp(1e-6, 1.0)
+            bh_norm = ((boxes[:, 3] - boxes[:, 1]) / img_size).clamp(1e-6, 1.0)
+            per_image_assignments.append(
+                self._assign_scale_for_box(bw_norm, bh_norm, num_scales)
+            )
+
+        for scale_idx, pred in enumerate(predictions):
             _, channels, h, w = pred.shape
             expected = self.num_anchors * (5 + self.num_classes)
             if channels != expected:
                 continue
 
             pred = pred.view(batch_size, self.num_anchors, 5 + self.num_classes, h, w)
-            pred_boxes = pred[:, :, :4, :, :]   # tx, ty, tw, th
+            pred_boxes = pred[:, :, :4, :, :]   # tx, ty, tw, th (logits)
             pred_obj = pred[:, :, 4, :, :]      # logits
             pred_cls = pred[:, :, 5:, :, :]     # logits
 
@@ -109,10 +150,18 @@ class YOLOLoss(nn.Module):
                 boxes = boxes.to(device)
                 labels = labels.to(device)
 
-                cx = ((boxes[:, 0] + boxes[:, 2]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
-                cy = ((boxes[:, 1] + boxes[:, 3]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
-                bw = ((boxes[:, 2] - boxes[:, 0]) / img_size).clamp(1e-6, 1.0)
-                bh = ((boxes[:, 3] - boxes[:, 1]) / img_size).clamp(1e-6, 1.0)
+                # Lọc các GT thuộc về scale hiện tại
+                scale_mask = per_image_assignments[b] == scale_idx
+                if scale_mask.sum() == 0:
+                    continue
+
+                boxes_s = boxes[scale_mask]
+                labels_s = labels[scale_mask]
+
+                cx = ((boxes_s[:, 0] + boxes_s[:, 2]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
+                cy = ((boxes_s[:, 1] + boxes_s[:, 3]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
+                bw = ((boxes_s[:, 2] - boxes_s[:, 0]) / img_size).clamp(1e-6, 1.0)
+                bh = ((boxes_s[:, 3] - boxes_s[:, 1]) / img_size).clamp(1e-6, 1.0)
 
                 gx = cx * w
                 gy = cy * h
@@ -121,7 +170,7 @@ class YOLOLoss(nn.Module):
                 tx = gx - gi.float()
                 ty = gy - gj.float()
 
-                valid = (labels >= 0) & (labels < self.num_classes)
+                valid = (labels_s >= 0) & (labels_s < self.num_classes)
                 if valid.sum() == 0:
                     continue
 
@@ -131,54 +180,78 @@ class YOLOLoss(nn.Module):
                 ty = ty[valid]
                 bw = bw[valid]
                 bh = bh[valid]
-                labels = labels[valid]
+                labels_v = labels_s[valid]
 
-                # Minimal assignment: mark all anchors at responsible cell positive.
+                # Gán positive cho tất cả anchors tại cell tương ứng.
                 for a in range(self.num_anchors):
                     obj_target[b, a, gj, gi] = 1.0
                     pos_mask[b, a, gj, gi] = True
-                    cls_target[b, a, labels, gj, gi] = 1.0
+                    cls_target[b, a, labels_v, gj, gi] = 1.0
 
                     pred_xywh = pred_boxes[b, a, :, gj, gi].transpose(0, 1)
                     pred_xy = pred_xywh[:, :2].sigmoid()
                     pred_wh = pred_xywh[:, 2:].sigmoid()
-                    tgt_xywh = torch.stack((tx, ty, bw, bh), dim=1)
-                    box_loss = box_loss + self.box_loss_fn(
-                        torch.cat((pred_xy, pred_wh), dim=1),
-                        tgt_xywh,
+
+                    # Build xyxy boxes (toạ độ chuẩn hoá [0,1] toàn ảnh) để tính GIoU.
+                    # Pred center = (gi + sigmoid(tx)) / w, normalized.
+                    cell_size_x = 1.0 / float(w)
+                    cell_size_y = 1.0 / float(h)
+                    pcx = (gi.float() + pred_xy[:, 0]) * cell_size_x
+                    pcy = (gj.float() + pred_xy[:, 1]) * cell_size_y
+                    pw = pred_wh[:, 0]
+                    ph = pred_wh[:, 1]
+                    pred_xyxy = torch.stack(
+                        (pcx - pw / 2, pcy - ph / 2, pcx + pw / 2, pcy + ph / 2),
+                        dim=1,
                     )
+                    tcx = cx[valid]
+                    tcy = cy[valid]
+                    tgt_xyxy = torch.stack(
+                        (tcx - bw / 2, tcy - bh / 2, tcx + bw / 2, tcy + bh / 2),
+                        dim=1,
+                    )
+                    giou = generalized_box_iou(pred_xyxy, tgt_xyxy)
+                    # Lấy đường chéo (mỗi pred khớp đúng GT cùng index)
+                    giou_diag = giou.diagonal()
+                    box_loss = box_loss + (1.0 - giou_diag).sum()
 
                 total_pos += int(gi.numel()) * self.num_anchors
 
-            obj_elementwise = self.bce_obj(pred_obj, obj_target)
+            # ---- Objectness loss với Focal weighting ----
+            obj_bce = self.bce_obj(pred_obj, obj_target)
+            focal_w = self._focal_factor(
+                pred_obj.detach(), obj_target, self.focal_alpha, self.focal_gamma
+            )
+            obj_elementwise = obj_bce * focal_w
+
             pos_count = pos_mask.sum().item()
             neg_mask = ~pos_mask
             neg_count = neg_mask.sum().item()
 
             if pos_count > 0:
-                obj_pos = obj_elementwise[pos_mask].mean()
+                obj_pos = obj_elementwise[pos_mask].sum() / max(pos_count, 1)
             else:
                 obj_pos = torch.zeros((), device=device)
 
             if neg_count > 0:
-                obj_neg = obj_elementwise[neg_mask].mean()
+                # Chia cho pos_count để negatives được scale theo số positives (focal-loss convention).
+                obj_neg = obj_elementwise[neg_mask].sum() / max(pos_count, 1)
             else:
                 obj_neg = torch.zeros((), device=device)
 
-            obj_loss = obj_loss + obj_pos + self.lambda_noobj * obj_neg
+            obj_loss = obj_loss + self.lambda_obj * obj_pos + self.lambda_noobj * obj_neg
 
-            # Class loss should be computed only on positive anchors/cells.
-            # Broadcast pos mask to class dimension: (B, A, C, H, W)
+            # ---- Classification loss (chỉ ở positive cells) ----
             cls_pos_mask = pos_mask.unsqueeze(2).expand_as(pred_cls)
             if cls_pos_mask.any():
-                cls_loss = cls_loss + self.bce_cls(pred_cls, cls_target)[cls_pos_mask].mean()
+                cls_bce = self.bce_cls(pred_cls, cls_target)[cls_pos_mask]
+                cls_loss = cls_loss + cls_bce.mean()
 
-        norm = max(1, num_scales)
-        if total_pos > 0:
-            box_loss = box_loss / float(total_pos)
+        norm_pos = max(1, total_pos)
+        box_loss = box_loss / float(norm_pos)
         total_loss = (
-            self.lambda_obj * (obj_loss / norm) +
-            self.lambda_cls * (cls_loss / norm) +
+            obj_loss / max(1, num_scales) +
+            self.lambda_cls * (cls_loss / max(1, num_scales)) +
             self.lambda_box * box_loss
         )
         return total_loss

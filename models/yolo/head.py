@@ -54,6 +54,20 @@ class SingleScaleHead(nn.Module):
         )
         self.pred = nn.Conv2d(in_ch, out_ch, kernel_size=1)
 
+        # Bias prior init: objectness ~ 0.01 ở khởi tạo (tránh model collapse
+        # về "no object everywhere" do mất cân bằng pos/neg).
+        # Class logits cũng init về prior ~1/num_classes để cross-entropy ổn định.
+        stride_per_anchor = 5 + num_classes
+        with torch.no_grad():
+            bias = self.pred.bias.view(num_anchors, stride_per_anchor)
+            bias.zero_()
+            # Objectness logit: sigmoid(-4.6) ≈ 0.01
+            bias[:, 4] = -4.6
+            # Class logits: sigmoid(-log((1-p)/p)) với p=1/num_classes
+            import math
+            cls_prior = max(1.0 / max(num_classes, 1), 1e-3)
+            bias[:, 5:] = -math.log((1.0 - cls_prior) / cls_prior)
+
     def forward(self, x: Tensor) -> Tensor:
         """Dự đoán detection cho một feature map.
 

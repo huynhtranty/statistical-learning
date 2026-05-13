@@ -177,27 +177,25 @@ def load_model(model_type: str, weights_path: str, device: str, num_classes: int
 # ─────────────────────────────────────────────────────────────────────────────
 
 def preprocess_image_pil(image_path: Path, input_size: int = 640) -> tuple:
-    """Load image and return (PIL_image, original_size, tensor, scale, pad_x, pad_y)."""
+    """Load image and return (PIL_image, original_size, tensor, scale_x, scale_y, pad_x, pad_y).
+
+    Phải đồng bộ với pipeline training trong models/utils/coco_dataset.py:
+    direct resize tới (input_size, input_size) — KHÔNG letterbox.
+    """
     pil_img = Image.open(image_path).convert("RGB")
     orig_w, orig_h = pil_img.size
 
-    # Resize to input_size keeping aspect ratio (letterbox)
-    scale = min(input_size / orig_w, input_size / orig_h)
-    new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+    resized = pil_img.resize((input_size, input_size), Image.BILINEAR)
 
-    resized = pil_img.resize((new_w, new_h), Image.LANCZOS)
-
-    # Pad to square
-    canvas = Image.new("RGB", (input_size, input_size), (114, 114, 114))
-    pad_x = (input_size - new_w) // 2
-    pad_y = (input_size - new_h) // 2
-    canvas.paste(resized, (pad_x, pad_y))
-
-    # Convert to tensor [0,1] - NO normalization (model was trained without it)
-    arr = np.array(canvas, dtype=np.float32) / 255.0
+    arr = np.array(resized, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (C, H, W)
-    
-    return pil_img, (orig_w, orig_h), tensor, scale, pad_x, pad_y
+
+    # Trả về scale_x / scale_y để map predictions từ input-space về ảnh gốc.
+    scale_x = input_size / float(orig_w)
+    scale_y = input_size / float(orig_h)
+    pad_x = 0
+    pad_y = 0
+    return pil_img, (orig_w, orig_h), tensor, (scale_x, scale_y), pad_x, pad_y
 
 
 def _nms(boxes: list, scores: list, labels: list,
@@ -251,77 +249,77 @@ def _decode_yolo_single_scale(
     pred: torch.Tensor,
     orig_w: int,
     orig_h: int,
-    scale: float,
+    scale_x: float,
+    scale_y: float,
     pad_x: int,
     pad_y: int,
     input_size: int,
     conf_threshold: float,
+    num_classes: int = 10,
+    num_anchors: int = 3,
 ) -> tuple[list, list, list]:
-    """Decode predictions from a single YOLO scale into pixel bboxes."""
-    # pred: (batch, num_anchors*(5+num_classes), H, W) → take batch 0
-    pred = pred[0]  # (C, H, W)
-    C = pred.shape[0]
+    """Vectorised decode for one YOLO scale → list of [x,y,w,h] boxes in original-image pixels."""
+    # pred: (1, A*(5+C), H, W) → batch 0
+    pred = pred[0]  # (C_total, H, W)
     H, W = pred.shape[1], pred.shape[2]
-    num_classes = C // 3 - 5  # 3 anchors per cell
-    stride = input_size / W   # grid cell size in input-space
+    stride_x = input_size / W
+    stride_y = input_size / H
+
+    # Reshape to (A, 5+C, H, W)
+    pred = pred.view(num_anchors, 5 + num_classes, H, W)
+
+    tx = pred[:, 0, :, :].sigmoid()  # (A, H, W)
+    ty = pred[:, 1, :, :].sigmoid()
+    tw = pred[:, 2, :, :].sigmoid()
+    th = pred[:, 3, :, :].sigmoid()
+    obj = pred[:, 4, :, :].sigmoid()
+    cls = pred[:, 5:, :, :].sigmoid()  # (A, C, H, W)
+
+    # score per (A, C, H, W) = obj * cls
+    scores_full = obj.unsqueeze(1) * cls  # (A, C, H, W)
+    # Best class per (A, H, W)
+    best_score, best_cls = scores_full.max(dim=1)  # (A, H, W)
+
+    keep = best_score > conf_threshold
+    if not keep.any():
+        return [], [], []
+
+    a_idx, j_idx, i_idx = torch.where(keep)  # anchor, row(cy), col(cx)
+    sel_score = best_score[a_idx, j_idx, i_idx].cpu().tolist()
+    sel_cls = best_cls[a_idx, j_idx, i_idx].cpu().tolist()
+    sel_tx = tx[a_idx, j_idx, i_idx].cpu().numpy()
+    sel_ty = ty[a_idx, j_idx, i_idx].cpu().numpy()
+    sel_tw = tw[a_idx, j_idx, i_idx].cpu().numpy()
+    sel_th = th[a_idx, j_idx, i_idx].cpu().numpy()
+    cx_grid = i_idx.cpu().numpy()
+    cy_grid = j_idx.cpu().numpy()
 
     boxes, scores, labels = [], [], []
-    
-    # Debug: check raw outputs
-    obj_values = pred[4::5+num_classes, :, :].cpu()  # objectness scores
-    max_obj = obj_values.max().item()
-    max_cls = pred[5:5+num_classes, :, :].max().item()
-    
-    for cy in range(H):
-        for cx in range(W):
-            for a in range(3):
-                offset = a * (5 + num_classes)
-                tx = float(pred[offset, cy, cx].item())
-                ty = float(pred[offset+1, cy, cx].item())
-                tw = float(pred[offset+2, cy, cx].item())
-                th = float(pred[offset+3, cy, cx].item())
-                obj = float(pred[offset + 4, cy, cx].item())
-                cls_logits = pred[offset+5:offset+5+num_classes, cy, cx].cpu().numpy()
+    for k in range(len(sel_score)):
+        xc_in = (cx_grid[k] + float(sel_tx[k])) * stride_x
+        yc_in = (cy_grid[k] + float(sel_ty[k])) * stride_y
+        bw_in = float(sel_tw[k]) * input_size
+        bh_in = float(sel_th[k]) * input_size
 
-                # Use lower threshold for debugging, then filter by final score
-                obj_sigmoid = 1 / (1 + np.exp(-obj))
-                
-                # sigmoid for class prob
-                cls_probs = 1 / (1 + np.exp(-cls_logits))
-                max_cls_prob = float(np.max(cls_probs))
-                final_score = obj_sigmoid * max_cls_prob
-                
-                if final_score < conf_threshold:
-                    continue
+        x1_in = xc_in - bw_in / 2
+        y1_in = yc_in - bh_in / 2
 
-                pred_cls = int(np.argmax(cls_probs))
+        # Inverse of direct resize: pixel_in_orig = (pixel_in_input - pad) / scale_axis
+        x = (x1_in - pad_x) / scale_x
+        y = (y1_in - pad_y) / scale_y
+        w = bw_in / scale_x
+        h = bh_in / scale_y
 
-                # Decode consistent with current YOLO training target parameterization:
-                # tx, ty in-cell offsets via sigmoid; tw, th normalized via sigmoid.
-                xc = (cx + 1 / (1 + np.exp(-tx))) * stride
-                yc = (cy + 1 / (1 + np.exp(-ty))) * stride
-                bw = float(1 / (1 + np.exp(-tw))) * input_size
-                bh = float(1 / (1 + np.exp(-th))) * input_size
+        x = max(0.0, min(x, orig_w))
+        y = max(0.0, min(y, orig_h))
+        w = min(w, orig_w - x)
+        h = min(h, orig_h - y)
+        if w <= 0 or h <= 0:
+            continue
 
-                x1 = xc - bw / 2
-                y1 = yc - bh / 2
-
-                # Remove padding & scale back to original
-                x = (x1 - pad_x) / scale
-                y = (y1 - pad_y) / scale
-                w = bw / scale
-                h = bh / scale
-
-                x = max(0, min(x, orig_w))
-                y = max(0, min(y, orig_h))
-                w = min(w, orig_w - x)
-                h = min(h, orig_h - y)
-                if w <= 0 or h <= 0:
-                    continue
-
-                boxes.append([x, y, w, h])
-                scores.append(final_score)
-                labels.append(pred_cls)
+        boxes.append([x, y, w, h])
+        scores.append(float(sel_score[k]))
+        labels.append(int(sel_cls[k]))
 
     return boxes, scores, labels
 
@@ -335,10 +333,11 @@ def run_predictions(
     conf_threshold: float = 0.5,
 ) -> tuple[list, list, list]:
     """Run model on one image and return (boxes, labels, scores) in pixel coords."""
-    pil_img, orig_size, tensor, scale, pad_x, pad_y = preprocess_image_pil(
+    pil_img, orig_size, tensor, scales, pad_x, pad_y = preprocess_image_pil(
         image_path, input_size
     )
     orig_w, orig_h = orig_size
+    scale_x, scale_y = scales
 
     with torch.no_grad():
         if model_type == "faster_rcnn":
@@ -352,10 +351,10 @@ def run_predictions(
                 if sc < conf_threshold:
                     continue
                 x1, y1, x2, y2 = bx
-                x1 = (x1 - pad_x) / scale
-                y1 = (y1 - pad_y) / scale
-                x2 = (x2 - pad_x) / scale
-                y2 = (y2 - pad_y) / scale
+                x1 = (x1 - pad_x) / scale_x
+                y1 = (y1 - pad_y) / scale_y
+                x2 = (x2 - pad_x) / scale_x
+                y2 = (y2 - pad_y) / scale_y
                 x1 = max(0, min(x1, orig_w))
                 y1 = max(0, min(y1, orig_h))
                 x2 = max(0, min(x2, orig_w))
@@ -373,25 +372,22 @@ def run_predictions(
             if not isinstance(predictions_list, list):
                 predictions_list = [predictions_list]
 
-            # Debug: Print model output info
-            print(f"    [DEBUG] YOLO output: {len(predictions_list)} scales")
-            for i, pred in enumerate(predictions_list):
-                print(f"    [DEBUG] Scale {i}: shape={pred.shape}")
+            # Số class lấy từ shape output để decode đúng (3 anchors/cell).
+            ch = predictions_list[0].shape[1]
+            num_classes = ch // 3 - 5
 
             all_boxes, all_scores, all_labels = [], [], []
             for scale_idx, pred in enumerate(predictions_list):
                 b, s, l = _decode_yolo_single_scale(
                     pred, orig_w, orig_h,
-                    scale, pad_x, pad_y,
+                    scale_x, scale_y, pad_x, pad_y,
                     input_size, conf_threshold,
+                    num_classes=num_classes, num_anchors=3,
                 )
-                print(f"    [DEBUG] Scale {scale_idx}: {len(b)} boxes before NMS")
                 all_boxes.extend(b)
                 all_scores.extend(s)
                 all_labels.extend(l)
 
-            print(f"    [DEBUG] Total boxes before NMS: {len(all_boxes)}")
-            
             # NMS across all scales
             result_boxes, result_scores, result_labels = _nms(
                 all_boxes, all_scores, all_labels
