@@ -177,7 +177,7 @@ def load_model(model_type: str, weights_path: str, device: str, num_classes: int
 # ─────────────────────────────────────────────────────────────────────────────
 
 def preprocess_image_pil(image_path: Path, input_size: int = 640) -> tuple:
-    """Load image and return (PIL_image, original_size, tensor, scale)."""
+    """Load image and return (PIL_image, original_size, tensor, scale, pad_x, pad_y)."""
     pil_img = Image.open(image_path).convert("RGB")
     orig_w, orig_h = pil_img.size
 
@@ -193,15 +193,10 @@ def preprocess_image_pil(image_path: Path, input_size: int = 640) -> tuple:
     pad_y = (input_size - new_h) // 2
     canvas.paste(resized, (pad_x, pad_y))
 
-    # Convert to tensor [0,1]
+    # Convert to tensor [0,1] - NO normalization (model was trained without it)
     arr = np.array(canvas, dtype=np.float32) / 255.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1)
-
-    # Normalize
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    tensor = (tensor - mean) / std
-
+    tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (C, H, W)
+    
     return pil_img, (orig_w, orig_h), tensor, scale, pad_x, pad_y
 
 
@@ -271,29 +266,39 @@ def _decode_yolo_single_scale(
     stride = input_size / W   # grid cell size in input-space
 
     boxes, scores, labels = [], [], []
+    
+    # Debug: check raw outputs
+    obj_values = pred[4::5+num_classes, :, :].cpu()  # objectness scores
+    max_obj = obj_values.max().item()
+    max_cls = pred[5:5+num_classes, :, :].max().item()
+    
     for cy in range(H):
         for cx in range(W):
             for a in range(3):
                 offset = a * (5 + num_classes)
-                tx, ty, tw, th = pred[offset:offset+4, cy, cx].cpu().numpy()
-                obj = float(pred[offset + 4, cy, cx].cpu())
+                tx = float(pred[offset, cy, cx].item())
+                ty = float(pred[offset+1, cy, cx].item())
+                tw = float(pred[offset+2, cy, cx].item())
+                th = float(pred[offset+3, cy, cx].item())
+                obj = float(pred[offset + 4, cy, cx].item())
                 cls_logits = pred[offset+5:offset+5+num_classes, cy, cx].cpu().numpy()
 
-                if obj < conf_threshold:
-                    continue
-
+                # Use lower threshold for debugging, then filter by final score
+                obj_sigmoid = 1 / (1 + np.exp(-obj))
+                
                 # sigmoid for class prob
                 cls_probs = 1 / (1 + np.exp(-cls_logits))
-                max_cls_prob = float(cls_probs.max())
-                final_score = obj * max_cls_prob
+                max_cls_prob = float(np.max(cls_probs))
+                final_score = obj_sigmoid * max_cls_prob
+                
                 if final_score < conf_threshold:
                     continue
 
-                pred_cls = int(cls_probs.argmax())
+                pred_cls = int(np.argmax(cls_probs))
 
                 # Convert tx,ty,tw,th to pixel coords
-                xc = (cx + (1 / (1 + np.exp(-tx)))) * stride
-                yc = (cy + (1 / (1 + np.exp(-ty)))) * stride
+                xc = (cx + 1 / (1 + np.exp(-tx))) * stride
+                yc = (cy + 1 / (1 + np.exp(-ty))) * stride
                 bw = float(np.exp(tw)) * stride * 4
                 bh = float(np.exp(th)) * stride * 4
 
@@ -364,17 +369,25 @@ def run_predictions(
             if not isinstance(predictions_list, list):
                 predictions_list = [predictions_list]
 
+            # Debug: Print model output info
+            print(f"    [DEBUG] YOLO output: {len(predictions_list)} scales")
+            for i, pred in enumerate(predictions_list):
+                print(f"    [DEBUG] Scale {i}: shape={pred.shape}")
+
             all_boxes, all_scores, all_labels = [], [], []
-            for pred in predictions_list:
+            for scale_idx, pred in enumerate(predictions_list):
                 b, s, l = _decode_yolo_single_scale(
                     pred, orig_w, orig_h,
                     scale, pad_x, pad_y,
                     input_size, conf_threshold,
                 )
+                print(f"    [DEBUG] Scale {scale_idx}: {len(b)} boxes before NMS")
                 all_boxes.extend(b)
                 all_scores.extend(s)
                 all_labels.extend(l)
 
+            print(f"    [DEBUG] Total boxes before NMS: {len(all_boxes)}")
+            
             # NMS across all scales
             result_boxes, result_scores, result_labels = _nms(
                 all_boxes, all_scores, all_labels
