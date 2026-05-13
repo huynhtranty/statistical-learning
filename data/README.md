@@ -6,20 +6,25 @@
 |---|---|
 | Nguồn | COCO 2017 (train + val) |
 | Công cụ tải | FiftyOne Zoo |
-| Số lớp | 6 |
-| Ảnh / lớp (tối đa) | 1000 |
-| Tổng ảnh ước tính | 6000 |
+| Số lớp | 10 |
+| Ảnh / lớp (tối đa) | 500 |
+| Tổng ảnh ước tính | 5000 |
 | Seed | 42 |
 
 ## Các lớp đối tượng
 
 ```
-0  cat
-1  dog
-2  horse
-3  cow
-4  bird
-5  sheep
+1. cat
+2. dog
+3. horse
+4. cow
+5. bird
+6. sheep
+7. elephant
+8. bear
+9. zebra
+10. giraffe
+
 ```
 
 Tất cả thuộc nhóm **động vật** trong COCO — đủ đa dạng về hình dạng, kích thước,
@@ -69,12 +74,14 @@ pip install kaggle ultralytics pycocotools scikit-learn tqdm
 python data/source/prepare_animal_dataset.py
 
 # Tuỳ chỉnh tỷ lệ (train val test, tổng phải = 1.0)
-python data/source/prepare_animal_dataset.py --split 0.8 0.1 0.1
-python data/source/prepare_animal_dataset.py --split 0.7 0.2 0.1
+python data/source/prepare_animal_dataset.py --split 0.8 0.1 0.1 
+
+# Tùy chỉnh số lượng workers cho download
+python data/source/prepare_animal_dataset.py --workers 16
 ```
 
 Script sẽ:
-- Tải COCO 2017 train + val qua FiftyOne (chỉ các lớp động vật đã chọn)
+- Tải COCO 2017 train + val qua Kaggle (chỉ các lớp động vật đã chọn)
 - Lọc và cân bằng theo lớp dominant
 - Chia stratified theo tỷ lệ đã chọn
 - Copy ảnh vào `data/images/{split}/`

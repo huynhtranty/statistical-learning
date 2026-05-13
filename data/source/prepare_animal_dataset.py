@@ -49,7 +49,7 @@ COCO_CDN = {
     "val"  : "http://images.cocodataset.org/val2017",
 }
 
-DEFAULT_WORKERS = 6
+DEFAULT_WORKERS = 12
 
 _HERE      = Path(__file__).parent       # data/source/
 BASE_DIR   = _HERE.parent               # data/
