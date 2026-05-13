@@ -23,7 +23,7 @@ CLASSES = ["cat", "dog", "horse", "cow", "bird", "sheep",
 CLASS_TO_ID  = {cls: i + 1 for i, cls in enumerate(CLASSES)}
 ID_TO_CLASS  = {v: k for k, v in CLASS_TO_ID.items()}
 
-MAX_SAMPLES_PER_CLASS = 50
+MAX_SAMPLES_PER_CLASS = 500
 DEFAULT_SPLIT         = (0.70, 0.15, 0.15)
 RANDOM_SEED           = 42
 
