@@ -3,11 +3,11 @@
 
 model:
   model_name: fasterrcnn_resnet50_fpn
-  num_classes: 7            # 6 lớp vật thể + 1 background
+  num_classes: 11           # 10 lớp vật thể + 1 background
   image_size: 640
   pretrained_backbone: true
   trainable_backbone_layers: 3
-  classes: ["__background__", "cat", "dog", "horse", "cow", "bird", "sheep"]
+  classes: ["__background__", "cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
 
 # TODO: Thêm cấu hình anchor sizes/aspect ratios.
 # TODO: Thêm cấu hình RPN (nms_thresh, pre/post nms top_n, v.v.).

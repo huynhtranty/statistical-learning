@@ -3,11 +3,11 @@
 
 model:
   model_name: yolo_custom
-  num_classes: 6              # Số lớp vật thể: cat, dog, horse, cow, bird, sheep
+  num_classes: 10           # Số lớp vật thể: cat, dog, horse, cow, bird, sheep, elephant, bear, zebra, giraffe
   image_size: 640
-  base_channels: 32         # Số kênh cơ sở (tăng để có model lớn hơn)
-  num_anchors: 3            # Số anchor mỗi vị trí grid
-  classes: ["cat", "dog", "horse", "cow", "bird", "sheep"]
+  base_channels: 32          # Số kênh cơ sở (tăng để có model lớn hơn)
+  num_anchors: 3             # Số anchor mỗi vị trí grid
+  classes: ["cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
 
 # TODO: Định nghĩa anchor sizes cụ thể cho từng scale.
 # TODO: Thêm cấu hình NMS (iou_threshold, confidence_threshold).
