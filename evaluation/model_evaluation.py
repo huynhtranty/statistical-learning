@@ -868,7 +868,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     p.add_argument("--input-size", type=int, default=INPUT_SIZE)
     p.add_argument("--speed-iters", type=int, default=200)
-    p.add_argument("--num-classes", type=int, default=5)
+    p.add_argument("--num-classes", type=int, default=10)
     p.add_argument("--output", type=Path, default=Path("evaluation/results/evaluation.json"))
     p.add_argument("--compare-all", action="store_true",
                    help="Run all three models and compare.")
@@ -880,14 +880,16 @@ def load_model(
     model_type: Literal["faster_rcnn", "yolo", "detr"],
     weights_path: Path | None,
     device: str,
+    num_classes: int = 10,
 ) -> nn.Module:
     """Load model based on type."""
     if model_type == "faster_rcnn":
         from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
         model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+        # Modify for num_classes (Faster R-CNN uses 91 COCO classes by default)
     elif model_type == "yolo":
         from models.yolo import build_yolo
-        model = build_yolo(num_classes=6)
+        model = build_yolo(num_classes=num_classes)
     elif model_type == "detr":
         from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
         model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
@@ -919,7 +921,7 @@ def main() -> None:
         for model_type in ["faster_rcnn", "yolo", "detr"]:
             try:
                 print(f"\n>>> Evaluating {model_type}...")
-                model = load_model(model_type, args.weights, args.device)
+                model = load_model(model_type, args.weights, args.device, num_classes=args.num_classes)
 
                 predictions = None
                 ground_truths = None
@@ -944,7 +946,7 @@ def main() -> None:
         print(f"  Evaluating: {args.model}")
         print(f"{'='*60}\n")
 
-        model = load_model(args.model, args.weights, args.device)
+        model = load_model(args.model, args.weights, args.device, num_classes=args.num_classes)
 
         predictions = None
         ground_truths = None

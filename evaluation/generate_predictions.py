@@ -31,15 +31,17 @@ def parse_args():
                         help="Confidence threshold for predictions")
     parser.add_argument("--input-size", type=int, default=640,
                         help="Input image size")
+    parser.add_argument("--num-classes", type=int, default=10,
+                        help="Number of classes in the model")
     return parser.parse_args()
 
 
-def load_yolo_model(weights_path: str, device: str) -> nn.Module:
+def load_yolo_model(weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
     """Load YOLO model."""
     import sys
     sys.path.insert(0, str(Path(__file__).parent / ".." / "models"))
     from yolo.model import YOLOModel
-    model = YOLOModel(num_classes=6)
+    model = YOLOModel(num_classes=num_classes)
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     return model.to(device)
@@ -65,12 +67,12 @@ def load_detr_model(weights_path: str, device: str) -> nn.Module:
     return model.to(device)
 
 
-def load_model(model_type: str, weights_path: str, device: str) -> nn.Module:
+def load_model(model_type: str, weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
     """Load model based on type."""
     if model_type == "faster_rcnn":
         return load_faster_rcnn_model(weights_path, device)
     elif model_type == "yolo":
-        return load_yolo_model(weights_path, device)
+        return load_yolo_model(weights_path, device, num_classes)
     elif model_type == "detr":
         return load_detr_model(weights_path, device)
     else:
@@ -177,7 +179,7 @@ def main():
     args = parse_args()
     
     print(f"Loading {args.model} model from {args.weights}...")
-    model = load_model(args.model, args.weights, args.device)
+    model = load_model(args.model, args.weights, args.device, args.num_classes)
     model.eval()
     
     image_dir = Path(args.image_dir)

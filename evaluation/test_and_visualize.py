@@ -143,7 +143,7 @@ def draw_boxes(
 # Model loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_model(model_type: str, weights_path: str, device: str) -> nn.Module:
+def load_model(model_type: str, weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
     if model_type == "faster_rcnn":
         from torchvision.models.detection import (
             fasterrcnn_resnet50_fpn_v2,
@@ -156,7 +156,7 @@ def load_model(model_type: str, weights_path: str, device: str) -> nn.Module:
 
     elif model_type == "yolo":
         from models.yolo.model import build_yolo
-        model = build_yolo(num_classes=6)
+        model = build_yolo(num_classes=num_classes)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -443,6 +443,8 @@ def parse_args():
                         help="Path to save predictions JSON")
     parser.add_argument("--max-images", type=int, default=None,
                         help="Limit number of images to process")
+    parser.add_argument("--num-classes", type=int, default=10,
+                        help="Number of classes in the model")
     return parser.parse_args()
 
 
@@ -494,7 +496,7 @@ def main():
 
     # Load model
     print(f"[Info] Loading {args.model} from {args.weights}...")
-    model = load_model(args.model, args.weights, device)
+    model = load_model(args.model, args.weights, device, args.num_classes)
 
     # Load GT annotations if requested
     gt_data = None
