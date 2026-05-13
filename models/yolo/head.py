@@ -54,17 +54,21 @@ class SingleScaleHead(nn.Module):
         )
         self.pred = nn.Conv2d(in_ch, out_ch, kernel_size=1)
 
-        # Bias prior init: objectness ~ 0.01 ở khởi tạo (tránh model collapse
-        # về "no object everywhere" do mất cân bằng pos/neg).
-        # Class logits cũng init về prior ~1/num_classes để cross-entropy ổn định.
+        # Bias prior init — quan trọng cho từ-đầu-tới-cuối training ổn định:
+        # - tx, ty: bias=0 → sigmoid=0.5 (center của cell), hợp lý.
+        # - tw, th: bias=-2.2 → sigmoid=0.1 (box mặc định ~10% ảnh), tránh
+        #   mặc định box to nửa ảnh gây visualisation lệch.
+        # - obj  : bias=-4.6 → sigmoid=0.01 (prior negative cell), tránh
+        #   model collapse về "no object everywhere".
+        # - cls  : bias = log(p/(1-p)) với p=1/num_classes (uniform prior).
+        import math
         stride_per_anchor = 5 + num_classes
         with torch.no_grad():
             bias = self.pred.bias.view(num_anchors, stride_per_anchor)
             bias.zero_()
-            # Objectness logit: sigmoid(-4.6) ≈ 0.01
-            bias[:, 4] = -4.6
-            # Class logits: sigmoid(-log((1-p)/p)) với p=1/num_classes
-            import math
+            bias[:, 2] = -2.2  # tw → sigmoid ≈ 0.1
+            bias[:, 3] = -2.2  # th → sigmoid ≈ 0.1
+            bias[:, 4] = -4.6  # obj → sigmoid ≈ 0.01
             cls_prior = max(1.0 / max(num_classes, 1), 1e-3)
             bias[:, 5:] = -math.log((1.0 - cls_prior) / cls_prior)
 

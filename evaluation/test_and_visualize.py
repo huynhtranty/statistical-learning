@@ -270,8 +270,8 @@ def _decode_yolo_single_scale(
 
     tx = pred[:, 0, :, :].sigmoid()  # (A, H, W)
     ty = pred[:, 1, :, :].sigmoid()
-    tw = pred[:, 2, :, :].sigmoid()
-    th = pred[:, 3, :, :].sigmoid()
+    tw = pred[:, 2, :, :]            # NO sigmoid - raw log-scale
+    th = pred[:, 3, :, :]            # NO sigmoid - raw log-scale
     obj = pred[:, 4, :, :].sigmoid()
     cls = pred[:, 5:, :, :].sigmoid()  # (A, C, H, W)
 
@@ -298,8 +298,9 @@ def _decode_yolo_single_scale(
     for k in range(len(sel_score)):
         xc_in = (cx_grid[k] + float(sel_tx[k])) * stride_x
         yc_in = (cy_grid[k] + float(sel_ty[k])) * stride_y
-        bw_in = float(sel_tw[k]) * input_size
-        bh_in = float(sel_th[k]) * input_size
+        # tw/th are log-scale → exp to get actual scale factor
+        bw_in = float(np.exp(np.clip(sel_tw[k], -4, 4))) * stride_x
+        bh_in = float(np.exp(np.clip(sel_th[k], -4, 4))) * stride_y
 
         x1_in = xc_in - bw_in / 2
         y1_in = yc_in - bh_in / 2
