@@ -1,6 +1,6 @@
 """
 scripts/convert_coco_to_yolo.py
-================================
+===============================
 Chuyển đổi COCO JSON → YOLO txt format cho ultralytics training.
 
 Cách dùng:
@@ -44,7 +44,7 @@ def coco_to_yolo(split: str):
 
         lines = []
         for ann in anns_by_img.get(img_id, []):
-            cat_id       = ann["category_id"]
+            cat_id       = ann["category_id"] - 1   # COCO 1-indexed → YOLO 0-indexed
             bx, by, bw, bh = ann["bbox"]          # absolute pixels
             cx = (bx + bw / 2) / w
             cy = (by + bh / 2) / h

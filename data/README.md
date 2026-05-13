@@ -7,8 +7,13 @@
 | Nguồn | COCO 2017 (train + val) |
 | Công cụ tải | FiftyOne Zoo |
 | Số lớp | 6 |
+<<<<<<< HEAD
 | Ảnh / lớp (tối đa) | 150 |
 | Tổng ảnh ước tính | 600 – 850 |
+=======
+| Ảnh / lớp (tối đa) | 1000 |
+| Tổng ảnh ước tính | 6000 |
+>>>>>>> origin/main
 | Seed | 42 |
 
 ## Các lớp đối tượng
@@ -59,7 +64,7 @@ data/
 ### 1. Cài đặt dependencies
 
 ```bash
-pip install fiftyone ultralytics pycocotools scikit-learn tqdm
+pip install kaggle ultralytics pycocotools scikit-learn tqdm
 ```
 
 ### 2. Tải và xử lý dataset
@@ -109,7 +114,7 @@ yolo train data=animal_dataset.yaml model=yolo11s.pt epochs=50 imgsz=640
 
 ## Phương pháp chia dữ liệu
 
-- **Tỷ lệ:** 70% train / 15% val / 15% test
+- **Tỷ lệ (mặc định):** 70 / 15 / 15
 - **Stratified** theo lớp dominant của mỗi ảnh → mỗi split đều có đủ các lớp
 - **Random seed:** 42 (cố định cho cả 3 mô hình Faster R-CNN / YOLO / DETR)
 - Tất cả 3 mô hình dùng **cùng 1 split** → so sánh công bằng

@@ -101,56 +101,6 @@ Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md),
 Shared evaluation pipeline reports identical metrics for every model:
 
 ```bash
-# ─── Full Comprehensive Evaluation (RECOMMENDED) ─────────────────────────────
-# Single model with all metrics: mAP, Precision, Recall, FPS, Params, FLOPs, Confusion Matrix, PR Curve
-# GPU: cuda | CPU: cpu
-python evaluation/model_evaluation.py \
-    --model faster_rcnn \
-    --weights weights/faster_rcnn.pth \
-    --predictions predictions/faster_rcnn_test.json \
-    --ground-truth data/annotations/test.json \
-    --num-classes 6 \
-    --device cuda \
-    --plot
-
-# YOLO
-python evaluation/model_evaluation.py \
-    --model yolo \
-    --weights weights/yolo.pt \
-    --predictions predictions/yolo_test.json \
-    --ground-truth data/annotations/test.json \
-    --num-classes 6 \
-    --device cuda \
-    --output evaluation/results/test_vis \
-    --plot
-
-# DETR
-python evaluation/model_evaluation.py \
-    --model detr \
-    --weights weights/detr.pth \
-    --predictions predictions/detr_test.json \
-    --ground-truth data/annotations/test.json \
-    --num-classes 6 \
-    --device cuda \
-    --plot
-
-# ─── Compare All Models ───────────────────────────────────────────────────────
-# Run all three models and display comparison table
-python evaluation/model_evaluation.py --compare-all --device cuda --plot
-
-# ─── Speed Benchmark Only ─────────────────────────────────────────────────────
-# Measure FPS and latency without detection metrics
-python evaluation/benchmark_speed.py --weights weights/faster_rcnn.pth --model faster_rcnn --device cuda --iters 200
-python evaluation/benchmark_speed.py --weights weights/yolo.pt --model yolo --device cuda --iters 200
-python evaluation/benchmark_speed.py --weights weights/detr.pt --model detr --device cuda --iters 200
-
-# ─── Basic mAP Evaluation (requires pycocotools) ─────────────────────────────
-python evaluation/evaluate.py \
-    --predictions predictions/yolo_test.json \
-    --ground-truth data/processed/annotations/test.json \
-    --weights weights/yolo.pt
-```
-
 ### Output Metrics
 
 | Metric | Description |
