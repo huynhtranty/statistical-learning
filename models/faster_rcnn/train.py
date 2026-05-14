@@ -171,8 +171,8 @@ def validate(model, dataloader, device):
     total_loss = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
-        # images is already a stacked tensor from collate_fn, targets is a list
-        images = images.to(device)
+        # images is a stacked tensor [B, C, H, W]; list() converts to list of tensors
+        images = list(images.to(device))
 
         target_dicts = []
         for target in targets:

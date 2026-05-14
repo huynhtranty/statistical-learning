@@ -132,14 +132,36 @@ class HuggingFaceDETR(nn.Module):
         super().__init__()
         from transformers import DetrForObjectDetection
 
+        # Tạo mapping nhãn theo đúng số lớp để tránh warning mismatch
+        # giữa num_labels và id2label mặc định của checkpoint COCO (91 lớp).
+        id2label = {i: f"class_{i}" for i in range(num_classes)}
+        label2id = {v: k for k, v in id2label.items()}
+
         # ignore_mismatched_sizes=True → drop COCO 91-class head, init head mới
         # với num_labels=num_classes; phần backbone + transformer giữ nguyên COCO weights.
-        self.model = DetrForObjectDetection.from_pretrained(
-            "facebook/detr-resnet-50",
-            num_labels=num_classes,
-            num_queries=num_queries,
-            ignore_mismatched_sizes=True,
-        )
+        load_kwargs = {
+            "num_labels": num_classes,
+            "num_queries": num_queries,
+            "ignore_mismatched_sizes": True,
+            "id2label": id2label,
+            "label2id": label2id,
+        }
+
+        try:
+            self.model = DetrForObjectDetection.from_pretrained(
+                "facebook/detr-resnet-50",
+                **load_kwargs,
+            )
+        except ImportError as exc:
+            # Transformers có thể mặc định dùng TimmBackbone cho DETR.
+            # Nếu môi trường chưa có timm, fallback về backbone native để train tiếp.
+            if "timm" not in str(exc).lower():
+                raise
+            self.model = DetrForObjectDetection.from_pretrained(
+                "facebook/detr-resnet-50",
+                use_timm_backbone=False,
+                **load_kwargs,
+            )
         self.num_classes = num_classes
         self.num_queries = num_queries
 
