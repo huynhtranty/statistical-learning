@@ -213,9 +213,17 @@ class YOLOLoss(nn.Module):
                         dim=1,
                     )
                     giou = generalized_box_iou(pred_xyxy, tgt_xyxy)
-                    # Lấy đường chéo (mỗi pred khớp đúng GT cùng index)
                     giou_diag = giou.diagonal()
-                    box_loss = box_loss + (1.0 - giou_diag).sum()
+
+                    # Box loss = GIoU + L1 trên (cx, cy, w, h) chuẩn hoá.
+                    # L1 cho gradient tuyến tính trên từng coordinate, đặc biệt
+                    # giúp khi GIoU saturate (pred nằm hoàn toàn trong GT) —
+                    # đây là lý do model cố thủ ở prior wh nhỏ.
+                    pred_cxcywh = torch.stack((pcx, pcy, pw, ph), dim=1)
+                    tgt_cxcywh = torch.stack((tcx, tcy, bw, bh), dim=1)
+                    l1_per_box = (pred_cxcywh - tgt_cxcywh).abs().sum(dim=1)
+
+                    box_loss = box_loss + (1.0 - giou_diag).sum() + l1_per_box.sum()
 
                 total_pos += int(gi.numel()) * self.num_anchors
 

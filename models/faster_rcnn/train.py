@@ -129,7 +129,8 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, writer):
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
     for batch_idx, (images, targets) in enumerate(pbar):
-        images = [img.to(device) for img in images]
+        # images is a stacked tensor [B, C, H, W]; list() converts to list of tensors
+        images = list(images.to(device))
 
         target_dicts = []
         for target in targets:
@@ -163,14 +164,15 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, writer):
     return total_loss / len(dataloader)
 
 
-@torch.no_grad
+@torch.no_grad()
 def validate(model, dataloader, device):
     """Validate model."""
     model.eval()
     total_loss = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
-        images = [img.to(device) for img in images]
+        # images is already a stacked tensor from collate_fn, targets is a list
+        images = images.to(device)
 
         target_dicts = []
         for target in targets:
