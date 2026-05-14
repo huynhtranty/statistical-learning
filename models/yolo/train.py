@@ -25,11 +25,12 @@ import argparse
 import sys
 from pathlib import Path
 from datetime import datetime
-from tqdm import tqdm
 
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+import yaml
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -39,20 +40,45 @@ from models.utils.losses import YOLOLoss
 from models.utils.box_ops import cxcywh_to_xyxy
 
 
+def load_config(config_path: str | None = None) -> dict:
+    """Load config from YAML file. Falls back to defaults if not found."""
+    if config_path is None:
+        config_path = Path(__file__).parent / "config.yaml"
+    else:
+        config_path = Path(config_path)
+
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    return {}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train YOLO object detection model.")
+    p.add_argument("--config", type=str, default=None,
+                    help="Đường dẫn tới config.yaml (mặc định: models/yolo/config.yaml)")
+    
+    # Pre-parse to get config path
+    temp_args = p.parse_known_args()[0]
+    config = load_config(temp_args.config)
+
+    model_config = config.get("model", {})
+    train_config = config.get("training", {})
+
     p.add_argument("--data_root", type=str, default="data",
                     help="Đường dẫn tới thư mục data/ (mặc định: data)")
-    p.add_argument("--img_size", type=int, default=640,
-                    help="Kích thước ảnh input (mặc định: 640)")
-    p.add_argument("--batch_size", type=int, default=8,
-                    help="Batch size (mặc định: 8)")
-    p.add_argument("--epochs", type=int, default=50,
-                    help="Số epochs (mặc định: 50)")
-    p.add_argument("--lr", type=float, default=1e-3,
-                    help="Learning rate (mặc định: 1e-3)")
-    p.add_argument("--num_workers", type=int, default=4,
-                    help="Số workers cho DataLoader (mặc định: 4)")
+    p.add_argument("--img_size", type=int, default=model_config.get("image_size", 640),
+                    help=f"Kích thước ảnh input (mặc định: {model_config.get('image_size', 640)})")
+    p.add_argument("--batch_size", type=int, default=train_config.get("batch_size", 8),
+                    help=f"Batch size (mặc định: {train_config.get('batch_size', 8)})")
+    p.add_argument("--epochs", type=int, default=train_config.get("epochs", 50),
+                    help=f"Số epochs (mặc định: {train_config.get('epochs', 50)})")
+    p.add_argument("--lr", type=float, default=train_config.get("lr", 0.001),
+                    help=f"Learning rate (mặc định: {train_config.get('lr', 0.001)})")
+    p.add_argument("--weight_decay", type=float, default=train_config.get("weight_decay", 0.0001),
+                    help=f"Weight decay (mặc định: {train_config.get('weight_decay', 0.0001)})")
+    p.add_argument("--num_workers", type=int, default=train_config.get("num_workers", 4),
+                    help=f"Số workers cho DataLoader (mặc định: {train_config.get('num_workers', 4)})")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                     help="Thiết bị chạy (cpu hoặc cuda)")
     p.add_argument("--base_dir", type=str, default="models/yolo",
@@ -186,7 +212,7 @@ def main():
     model.to(device)
 
     criterion = YOLOLoss(num_classes=num_classes, num_anchors=3, image_size=args.img_size)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     start_epoch = 0

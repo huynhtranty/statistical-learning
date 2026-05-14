@@ -163,8 +163,7 @@ Khi YOLO ra detection sai (bbox lệch, class sai, conf thấp), chạy 3 script
 
 ```bash
 # 1) Vẽ GT từ dataloader (kèm augmentation)
-python scripts/visualize_dataset.py --data_root data --split train \
-  --output /tmp/gt_check --num 12 --augment
+python scripts/visualize_dataset.py --data_root data --split train --output /tmp/gt_check --num 12 --augment
 
 # 2) Inspect 1 batch (untrained or với checkpoint)
 python scripts/debug_one_batch.py --data_root data --device cuda
