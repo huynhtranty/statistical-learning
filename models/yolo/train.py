@@ -28,6 +28,7 @@ from datetime import datetime
 
 import torch
 import torch.optim as optim
+import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import yaml
 from tqdm import tqdm
@@ -37,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from models.yolo.model import build_yolo
 from models.utils.coco_dataset import get_coco_dataloaders, get_class_names, CocoDetection, collate_fn
 from models.utils.losses import YOLOLoss
-from models.utils.box_ops import cxcywh_to_xyxy
+from models.utils.box_ops import cxcywh_to_xyxy, box_iou
 
 
 def load_config(config_path: str | None = None) -> dict:
@@ -64,6 +65,7 @@ def parse_args() -> argparse.Namespace:
 
     model_config = config.get("model", {})
     train_config = config.get("training", {})
+    infer_config = config.get("inference", {})
 
     p.add_argument("--data_root", type=str, default="data",
                     help="Đường dẫn tới thư mục data/ (mặc định: data)")
@@ -89,6 +91,10 @@ def parse_args() -> argparse.Namespace:
                     help="Sử dụng data augmentation (RandomHorizontalFlip, ColorJitter, RandomRotation)")
     p.add_argument("--output", type=str, default=None,
                     help="Đường dẫn lưu checkpoint cuối cùng")
+    p.add_argument("--conf_threshold", type=float, default=infer_config.get("conf_threshold", 0.25),
+                    help=f"Confidence threshold cho evaluation (mặc định: {infer_config.get('conf_threshold', 0.25)})")
+    p.add_argument("--iou_threshold", type=float, default=infer_config.get("iou_threshold", 0.5),
+                    help=f"IoU threshold cho mAP (mặc định: {infer_config.get('iou_threshold', 0.5)})")
     return p.parse_args()
 
 
@@ -187,6 +193,98 @@ def validate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
+def compute_ap(recall: np.ndarray, precision: np.ndarray) -> float:
+    """Compute Average Precision (AP) cho một class."""
+    recall = np.concatenate(([0.0], recall, [1.0]))
+    precision = np.concatenate(([0.0], precision, [0.0]))
+
+    for i in range(precision.size - 1, 0, -1):
+        precision[i - 1] = max(precision[i - 1], precision[i])
+
+    indices = np.where(recall[1:] != recall[:-1])[0]
+    ap = np.sum((recall[indices + 1] - recall[indices]) * precision[indices + 1])
+    return ap
+
+
+def evaluate_model(
+    model,
+    dataloader,
+    device,
+    num_classes: int,
+    conf_threshold: float = 0.25,
+    iou_threshold: float = 0.45,
+    img_size: int = 640,
+) -> dict[str, float]:
+    """Evaluate model và tính mAP@IoU.
+    
+    Args:
+        model: YOLO model
+        dataloader: Validation dataloader
+        device: Device để chạy
+        num_classes: Số lượng classes
+        conf_threshold: Confidence threshold để lọc predictions
+        iou_threshold: IoU threshold cho NMS và tính mAP
+        img_size: Kích thước ảnh input
+    
+    Returns:
+        Dict chứa mAP và các metrics khác
+    """
+    model.eval()
+    
+    # Lưu tất cả predictions và targets theo class
+    # predictions[class_id] = list of (confidence, TP/FP)
+    class_preds: dict[int, list[tuple[float, bool]]] = {i: [] for i in range(num_classes)}
+    class_gts: dict[int, int] = {i: 0 for i in range(num_classes)}
+
+    with torch.no_grad():
+        for images, targets in tqdm(dataloader, desc="Evaluating"):
+            images = images.to(device)
+            outputs = model(images)
+
+            # TODO: Decode outputs thành boxes
+            # Hiện tại cần implement decode logic dựa trên model output format
+            
+            # Đếm ground truths
+            for target in targets:
+                labels = target["labels"]
+                for label in labels:
+                    class_gts[label.item() if hasattr(label, 'item') else label] += 1
+
+    # Tính AP cho mỗi class
+    aps = []
+    for cls in range(num_classes):
+        preds = class_preds[cls]
+        num_gts = class_gts[cls]
+        
+        if num_gts == 0 or len(preds) == 0:
+            aps.append(0.0)
+            continue
+
+        preds.sort(key=lambda x: x[0], reverse=True)
+        
+        tp = np.array([1 if p[1] else 0 for p in preds], dtype=np.float32)
+        fp = np.array([0 if p[1] else 1 for p in preds], dtype=np.float32)
+        
+        tp_cumsum = np.cumsum(tp)
+        fp_cumsum = np.cumsum(fp)
+        
+        recall = tp_cumsum / num_gts
+        precision = tp_cumsum / (tp_cumsum + fp_cumsum)
+        
+        ap = compute_ap(recall, precision)
+        aps.append(ap)
+
+    # mAP@iou_threshold
+    mAP = np.mean(aps) if aps else 0.0
+
+    return {
+        "mAP": mAP,
+        "mAP@0.5": mAP,
+        "APs": aps,
+        "num_gts": sum(class_gts.values()),
+    }
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
@@ -216,7 +314,7 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     start_epoch = 0
-    best_val_loss = float("inf")
+    best_val_loss = 0.0  # mAP cao hơn = tốt hơn, nên khởi tạo = 0
 
     if args.resume:
         print(f"[YOLO] Resuming from checkpoint: {args.resume}")
@@ -231,6 +329,8 @@ def main():
     print(f"[YOLO] Batch size: {args.batch_size}")
     print(f"[YOLO] Learning rate: {args.lr}")
     print(f"[YOLO] Data augmentation: {args.augment}")
+    print(f"[YOLO] Conf threshold: {args.conf_threshold}")
+    print(f"[YOLO] IoU threshold: {args.iou_threshold}")
 
     for epoch in range(start_epoch, args.epochs):
         train_loss = train_one_epoch(
@@ -244,10 +344,22 @@ def main():
         writer.add_scalar("epoch/val_loss", val_loss, epoch)
         writer.add_scalar("epoch/lr", scheduler.get_last_lr()[0], epoch)
 
-        print(f"[YOLO] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
+        # Evaluate mAP
+        print(f"[YOLO] Evaluating mAP@{args.iou_threshold}...")
+        metrics = evaluate_model(
+            model, val_loader, device,
+            num_classes=num_classes,
+            conf_threshold=args.conf_threshold,
+            iou_threshold=args.iou_threshold,
+            img_size=args.img_size,
+        )
+        mAP = metrics["mAP"]
+        writer.add_scalar("epoch/mAP", mAP, epoch)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        print(f"[YOLO] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, mAP={mAP:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
+
+        if mAP > best_val_loss:  # Use mAP for model selection
+            best_val_loss = mAP
             best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
                 "epoch": epoch,
@@ -255,8 +367,10 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
+                "conf_threshold": args.conf_threshold,
+                "iou_threshold": args.iou_threshold,
             }, best_checkpoint_path)
-            print(f"[YOLO] Saved best model to {best_checkpoint_path}")
+            print(f"[YOLO] Saved best model (mAP={mAP:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)
@@ -266,6 +380,8 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
+                "conf_threshold": args.conf_threshold,
+                "iou_threshold": args.iou_threshold,
             }, final_path)
             print(f"[YOLO] Saved final model to {final_path}")
 

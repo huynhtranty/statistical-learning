@@ -14,8 +14,10 @@ training:
   num_workers: 4
   lr: 0.001                 # Learning rate
   weight_decay: 0.0001      # Weight decay cho optimizer
-  # img_size được kế thừa từ model.image_size
+
+inference:
+  conf_threshold: 0.25      # Confidence threshold (0.0 - 1.0)
+  iou_threshold: 0.45       # IoU threshold cho NMS (0.0 - 1.0)
 
 # TODO: Định nghĩa anchor sizes cụ thể cho từng scale.
-# TODO: Thêm cấu hình NMS (iou_threshold, confidence_threshold).
 # TODO: Thêm cấu hình data augmentation (mosaic, mixup, v.v.).

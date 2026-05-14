@@ -42,7 +42,8 @@ Với init này, model có thể detect được object ở pretrained backbone 
 | `neck.py` | `YOLONeck` — FPN top-down |
 | `head.py` | `SingleScaleHead` + `YOLODetectionHead` — output 3 anchor × (5+C) channels |
 | `train.py` | Training loop với YOLOLoss |
-| `config.yaml` | num_classes, image_size, base_channels |
+| `inference.py` | Inference script với NMS |
+| `config.yaml` | Cấu hình model, training, và inference (conf/iou thresholds) |
 
 ## Cách chạy training
 
