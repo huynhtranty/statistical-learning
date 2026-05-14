@@ -47,6 +47,25 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Pretrained weights
+
+Cả 3 model đều sử dụng pretrained để fine-tune (không train từ đầu):
+
+| Model | Pretrained source | Triggered automatically |
+|---|---|---|
+| **Faster R-CNN** | torchvision `fasterrcnn_resnet50_fpn` COCO detector | Khi `build_faster_rcnn(pretrained=True)` (default) |
+| **DETR** | HuggingFace `facebook/detr-resnet-50` COCO detector | Khi `build_detr(pretrained_coco=True)` (default) |
+| **YOLO** (custom) | torchvision `resnet34` ImageNet backbone | Khi `build_yolo(pretrained_backbone=True)` (default) |
+
+Weights được tự động tải về khi build model lần đầu (cached ở `~/.cache/torch/hub/checkpoints/` và `~/.cache/huggingface/`).
+
+Nếu gặp lỗi `SSL: CERTIFICATE_VERIFY_FAILED` trên macOS:
+```bash
+/Applications/Python\ 3.13/Install\ Certificates.command
+```
+
+DETR cần thêm `timm` (cài tự động qua `requirements.txt`, nếu thiếu chạy: `pip install timm`).
+
 ## GPU Cloud Setup
 
 If you're training on a remote GPU cloud server and need to transfer results back to your local machine.
@@ -115,18 +134,20 @@ print(f"Current GPU: {torch.cuda.get_device_name(0)}")
 
 ## Train
 
-Each model has its own training entrypoint and config. All accept the same CLI flags.
+Mỗi model có training entrypoint riêng. Tất cả đều load pretrained mặc định và fine-tune trên dataset.
 
 ```bash
-# Faster R-CNN
-python models/faster_rcnn/train.py --data data --epochs 50 --batch_size 8 --output weights/faster_rcnn.pth --device cuda
+# Faster R-CNN — load COCO detector, replace box predictor cho 11 class (10 + bg)
+python models/faster_rcnn/train.py --data_root data --epochs 10 --batch_size 4 --output weights/faster_rcnn.pt --device cuda
 
-# YOLO
-python models/yolo/train.py --data data --epochs 50 --batch_size 8 --output weights/yolo.pt --device cuda
+# YOLO custom — backbone ResNet-34 ImageNet pretrained, neck + head random
+python models/yolo/train.py --data_root data --epochs 10 --batch_size 8 --output weights/yolo.pt --device cuda
 
-# DETR
-python models/detr/train.py --data data --epochs 50 --batch_size 8 --output weights/detr.pth --device cuda
+# DETR — load HuggingFace facebook/detr-resnet-50 COCO detector, replace class head
+python models/detr/train.py --data_root data --epochs 10 --batch_size 4 --output weights/detr.pt --device cuda
 ```
+
+> **Lưu ý**: vì 3 model đều pretrained nên 10–15 epochs đã cho kết quả khá tốt. Train từ scratch (`pretrained_*=False`) sẽ cần 100+ epochs.
 
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
 
@@ -240,6 +261,11 @@ python evaluation/test_and_visualize.py \
     --device cuda \
     --num-classes 10 \
     --max-images 10
+
+python evaluation/test_and_visualize.py --model faster_rcnn --weights weights/faster_rcnn.pt --data data/images/test --output evaluation/results/faster_rcnn_vis --device cuda --conf-threshold 0.5 --show-gt --ann-file data/annotations/test.json
+python evaluation/test_and_visualize.py --model yolo        --weights weights/yolo.pt        --data data/images/test --output evaluation/results/yolo_vis        --device cuda --conf-threshold 0.25 --show-gt --ann-file data/annotations/test.json
+python evaluation/test_and_visualize.py --model detr        --weights weights/detr.pt        --data data/images/test --output evaluation/results/detr_vis        --device cuda --conf-threshold 0.5 --show-gt --ann-file data/annotations/test.json
+
 
 # Với model khác
 python evaluation/test_and_visualize.py --model faster_rcnn --weights weights/faster_rcnn.pth --data data/images/test --output evaluation/results/vis_frcnn --device cuda --num-classes 10
