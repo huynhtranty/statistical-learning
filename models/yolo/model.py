@@ -13,6 +13,8 @@ from __future__ import annotations
 import torch.nn as nn
 from torch import Tensor
 
+import torch
+
 from .backbone import YOLOBackbone, ResNet34Backbone
 from .neck import YOLONeck
 from .head import YOLODetectionHead
@@ -33,6 +35,10 @@ class YOLO(nn.Module):
             Chủ yếu phục vụ minh hoạ "custom backbone" trong báo cáo.
     """
 
+    # ImageNet normalization khi dùng ResNet34 pretrained.
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+
     def __init__(
         self,
         num_classes: int = 5,
@@ -43,6 +49,7 @@ class YOLO(nn.Module):
         use_csp_backbone: bool = False,
     ) -> None:
         super().__init__()
+        self.use_csp_backbone = use_csp_backbone
         if use_csp_backbone:
             self.backbone = YOLOBackbone(in_channels=in_channels, base_channels=base_channels)
         else:
@@ -54,16 +61,26 @@ class YOLO(nn.Module):
             num_classes=num_classes,
         )
 
+        # Buffer cho ImageNet normalization (chỉ dùng với ResNet34 backbone).
+        mean = torch.tensor(self.IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = torch.tensor(self.IMAGENET_STD).view(1, 3, 1, 1)
+        self.register_buffer("img_mean", mean)
+        self.register_buffer("img_std", std)
+
     def forward(self, x: Tensor) -> list[Tensor]:
         """Forward pass qua toàn bộ pipeline.
 
         Args:
-            x: Ảnh đầu vào (batch, 3, H, W). H và W nên chia hết cho 32.
+            x: Ảnh đầu vào (batch, 3, H, W) đã chuẩn hoá [0, 1].
+               Model tự áp ImageNet normalization bên trong khi dùng ResNet34
+               backbone để khớp với input statistics mà pretrained weights yêu cầu.
 
         Returns:
             Danh sách 3 tensor prediction ở 3 scale khác nhau.
             Mỗi tensor: (batch, num_anchors * (5 + num_classes), H_i, W_i).
         """
+        if not self.use_csp_backbone:
+            x = (x - self.img_mean) / self.img_std
         features = self.backbone(x)
         features = self.neck(features)
         predictions = self.head(features)
