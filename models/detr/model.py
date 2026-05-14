@@ -116,6 +116,48 @@ class DETR(nn.Module):
         }
 
 
+class HuggingFaceDETR(nn.Module):
+    """Wrapper quanh HuggingFace `facebook/detr-resnet-50` (COCO-pretrained).
+
+    Mở interface giống DETR custom: forward(x) → {"pred_logits", "pred_boxes"}.
+    Tự normalize ImageNet bên trong nên dataset pipeline không cần thay đổi
+    (ảnh đầu vào vẫn là tensor [0,1] sau khi `F.to_tensor`).
+    """
+
+    # ImageNet mean/std (cùng với mọi backbone torchvision).
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+
+    def __init__(self, num_classes: int = 10, num_queries: int = 100) -> None:
+        super().__init__()
+        from transformers import DetrForObjectDetection
+
+        # ignore_mismatched_sizes=True → drop COCO 91-class head, init head mới
+        # với num_labels=num_classes; phần backbone + transformer giữ nguyên COCO weights.
+        self.model = DetrForObjectDetection.from_pretrained(
+            "facebook/detr-resnet-50",
+            num_labels=num_classes,
+            num_queries=num_queries,
+            ignore_mismatched_sizes=True,
+        )
+        self.num_classes = num_classes
+        self.num_queries = num_queries
+
+        mean = torch.tensor(self.IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = torch.tensor(self.IMAGENET_STD).view(1, 3, 1, 1)
+        self.register_buffer("img_mean", mean)
+        self.register_buffer("img_std", std)
+
+    def forward(self, x: Tensor) -> dict[str, Tensor]:
+        # Ảnh đầu vào [0,1] → ImageNet-normalized cho HF DETR.
+        x = (x - self.img_mean) / self.img_std
+        out = self.model(pixel_values=x)
+        return {
+            "pred_logits": out.logits,     # (B, Q, num_classes+1)
+            "pred_boxes": out.pred_boxes,  # (B, Q, 4) cxcywh normalized [0,1]
+        }
+
+
 def build_detr(
     num_classes: int | None = None,
     num_queries: int | None = None,
@@ -124,24 +166,33 @@ def build_detr(
     num_encoder_layers: int | None = None,
     num_decoder_layers: int | None = None,
     pretrained_backbone: bool | None = None,
-) -> DETR:
+    pretrained_coco: bool = True,
+) -> nn.Module:
     """Tạo mô hình DETR.
 
     Args:
-        num_classes: Số lớp vật thể (không tính "no object").
-        num_queries: Số object queries (vật thể tối đa mỗi ảnh).
-        hidden_dim: Số chiều ẩn của transformer.
-        pretrained_backbone: Dùng backbone pretrained trên ImageNet hay không.
+        pretrained_coco: Nếu True (mặc định), dùng HuggingFace
+            `facebook/detr-resnet-50` COCO-pretrained, chỉ thay class head.
+            Nếu False, build DETR custom từ scratch (chỉ ImageNet backbone).
+        num_classes: Số lớp foreground (không tính "no object").
+        num_queries: Số object queries.
+        Các tham số khác chỉ áp dụng khi pretrained_coco=False.
 
     Returns:
-        Mô hình DETR sẵn sàng để train hoặc inference.
+        Mô hình DETR (custom hoặc HF wrapper) với interface
+        forward(x) → {"pred_logits", "pred_boxes"}.
     """
     config_path = Path(__file__).with_name("config.yaml")
     with config_path.open("r", encoding="utf-8") as f:
         model_cfg = yaml.safe_load(f).get("model", {})
 
-    num_classes = model_cfg.get("num_classes", 5) if num_classes is None else num_classes
+    num_classes = model_cfg.get("num_classes", 10) if num_classes is None else num_classes
     num_queries = model_cfg.get("num_queries", 100) if num_queries is None else num_queries
+
+    if pretrained_coco:
+        return HuggingFaceDETR(num_classes=num_classes, num_queries=num_queries)
+
+    # Custom from-scratch DETR (chỉ ImageNet backbone).
     hidden_dim = model_cfg.get("hidden_dim", 256) if hidden_dim is None else hidden_dim
     num_heads = model_cfg.get("num_heads", 8) if num_heads is None else num_heads
     num_encoder_layers = (
@@ -156,7 +207,6 @@ def build_detr(
         else pretrained_backbone
     )
 
-    # TODO: Hỗ trợ load checkpoint pretrained trên COCO từ HuggingFace.
     return DETR(
         num_classes=num_classes,
         hidden_dim=hidden_dim,

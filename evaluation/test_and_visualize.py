@@ -144,28 +144,28 @@ def draw_boxes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_model(model_type: str, weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
+    """Load custom-built models (ImageNet pretrained backbone, head trained on our dataset)."""
     if model_type == "faster_rcnn":
-        from torchvision.models.detection import (
-            fasterrcnn_resnet50_fpn_v2,
-            FasterRCNN_ResNet50_FPN_V2_Weights,
-        )
-        model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+        from models.faster_rcnn.model import build_faster_rcnn
+        # num_classes + 1 (cộng background). pretrained=False vì load từ checkpoint của ta.
+        model = build_faster_rcnn(num_classes=num_classes + 1, pretrained=False)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     elif model_type == "yolo":
         from models.yolo.model import build_yolo
-        model = build_yolo(num_classes=num_classes)
+        # backbone weights đã có trong checkpoint → tránh download lại pretrained.
+        model = build_yolo(num_classes=num_classes, pretrained_backbone=False)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
 
     elif model_type == "detr":
-        from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
-        model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
+        from models.detr.model import build_detr
+        # HF wrapper: cấu trúc tự load từ HF hub khi build, sau đó load checkpoint của ta.
+        model = build_detr(num_classes=num_classes, pretrained_coco=True)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"])
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -351,6 +351,10 @@ def run_predictions(
             for bx, sc, lb in zip(boxes_xyxy, scores, labels):
                 if sc < conf_threshold:
                     continue
+                # Faster R-CNN trả label 1..N (0 = background) → đổi về 0..N-1 cho class_names.
+                lb_idx = int(lb) - 1
+                if lb_idx < 0:
+                    continue
                 x1, y1, x2, y2 = bx
                 x1 = (x1 - pad_x) / scale_x
                 y1 = (y1 - pad_y) / scale_y
@@ -364,7 +368,7 @@ def run_predictions(
                 if w <= 0 or h <= 0:
                     continue
                 result_boxes.append([x1, y1, w, h])
-                result_labels.append(int(lb))
+                result_labels.append(lb_idx)
                 result_scores.append(float(sc))
 
         elif model_type == "yolo":
@@ -395,7 +399,8 @@ def run_predictions(
             )
 
         elif model_type == "detr":
-            output = model([tensor.to(device)])
+            # Custom DETR takes a 4D tensor (B, 3, H, W).
+            output = model(tensor.unsqueeze(0).to(device))
             probas = output["pred_logits"].softmax(-1)
             boxes_norm = output["pred_boxes"].cpu().numpy()
 

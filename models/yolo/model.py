@@ -13,7 +13,7 @@ from __future__ import annotations
 import torch.nn as nn
 from torch import Tensor
 
-from .backbone import YOLOBackbone
+from .backbone import YOLOBackbone, ResNet34Backbone
 from .neck import YOLONeck
 from .head import YOLODetectionHead
 
@@ -24,8 +24,9 @@ class YOLO(nn.Module):
     Args:
         num_classes: Số lớp vật thể (không tính background).
         in_channels: Số kênh ảnh đầu vào (3 cho RGB).
-        base_channels: Số kênh cơ sở cho backbone.
+        base_channels: Số kênh cơ sở cho backbone CSP (chỉ khi pretrained=False).
         num_anchors: Số anchor box mỗi vị trí grid.
+        pretrained_backbone: Dùng ResNet-34 ImageNet pretrained làm backbone.
     """
 
     def __init__(
@@ -34,9 +35,13 @@ class YOLO(nn.Module):
         in_channels: int = 3,
         base_channels: int = 32,
         num_anchors: int = 3,
+        pretrained_backbone: bool = True,
     ) -> None:
         super().__init__()
-        self.backbone = YOLOBackbone(in_channels=in_channels, base_channels=base_channels)
+        if pretrained_backbone:
+            self.backbone = ResNet34Backbone(pretrained=True)
+        else:
+            self.backbone = YOLOBackbone(in_channels=in_channels, base_channels=base_channels)
         self.neck = YOLONeck(in_channels=self.backbone.out_channels)
         self.head = YOLODetectionHead(
             in_channels=self.neck.out_channels,
@@ -64,21 +69,23 @@ def build_yolo(
     num_classes: int = 5,
     base_channels: int = 32,
     num_anchors: int = 3,
+    pretrained_backbone: bool = True,
 ) -> YOLO:
     """Tạo mô hình YOLO.
 
     Args:
         num_classes: Số lớp vật thể (không tính background).
-        base_channels: Số kênh cơ sở cho backbone (tăng = model lớn hơn, chính xác hơn).
+        base_channels: Số kênh cơ sở cho backbone CSP from-scratch.
         num_anchors: Số anchor box mỗi vị trí grid.
+        pretrained_backbone: Nếu True, dùng ResNet-34 ImageNet pretrained;
+            nếu False, dùng CSPDarkNet from-scratch.
 
     Returns:
         Mô hình YOLO sẵn sàng để train hoặc inference.
     """
-    # TODO: Cho phép load pretrained backbone (ví dụ: pretrained trên ImageNet).
-    # TODO: Hỗ trợ nhiều variant (nano, small, medium, large) thông qua base_channels.
     return YOLO(
         num_classes=num_classes,
         base_channels=base_channels,
         num_anchors=num_anchors,
+        pretrained_backbone=pretrained_backbone,
     )

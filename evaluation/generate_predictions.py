@@ -37,43 +37,38 @@ def parse_args():
 
 
 def load_yolo_model(weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
-    """Load YOLO model."""
     from models.yolo.model import build_yolo
-    model = build_yolo(num_classes=num_classes)
+    model = build_yolo(num_classes=num_classes, pretrained_backbone=False)
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     state = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
     model.load_state_dict(state)
     return model.to(device)
 
 
-def load_faster_rcnn_model(weights_path: str, device: str) -> nn.Module:
-    """Load Faster R-CNN model."""
-    from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
-    model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+def load_faster_rcnn_model(weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
+    from models.faster_rcnn.model import build_faster_rcnn
+    model = build_faster_rcnn(num_classes=num_classes + 1, pretrained=False)
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"])
     return model.to(device)
 
 
-def load_detr_model(weights_path: str, device: str) -> nn.Module:
-    """Load DETR model."""
-    from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
-    model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
+def load_detr_model(weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
+    from models.detr.model import build_detr
+    model = build_detr(num_classes=num_classes, pretrained_coco=True)
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"])
     return model.to(device)
 
 
 def load_model(model_type: str, weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
-    """Load model based on type."""
+    """Load model based on type (always custom-trained, not torchvision COCO-pretrained)."""
     if model_type == "faster_rcnn":
-        return load_faster_rcnn_model(weights_path, device)
+        return load_faster_rcnn_model(weights_path, device, num_classes)
     elif model_type == "yolo":
         return load_yolo_model(weights_path, device, num_classes)
     elif model_type == "detr":
-        return load_detr_model(weights_path, device)
+        return load_detr_model(weights_path, device, num_classes)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -152,33 +147,42 @@ def predict_faster_rcnn(model: nn.Module, image_tensor: torch.Tensor, device: st
     for box, score, label in zip(boxes, scores, labels):
         if score > conf_threshold:
             x1, y1, x2, y2 = box
+            # Faster R-CNN: label 1..N (0 = background) → đổi về 0..N-1.
+            cls_idx = int(label) - 1
+            if cls_idx < 0:
+                continue
             predictions.append({
                 "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 "score": float(score),
-                "class": int(label)
+                "class": cls_idx,
             })
     return predictions
 
 
 def predict_detr(model: nn.Module, image_tensor: torch.Tensor, device: str,
-                  conf_threshold: float = 0.5) -> list[dict]:
-    """Run prediction with DETR model."""
+                  conf_threshold: float = 0.5, input_size: int = 640) -> list[dict]:
+    """Run prediction with custom DETR model. Returns bbox in input-image-space (xywh)."""
     model.eval()
     with torch.no_grad():
-        output = model([image_tensor.to(device)])
-    
+        output = model(image_tensor.unsqueeze(0).to(device))
+
     predictions = []
-    probas = output["pred_logits"].softmax(-1)
-    boxes = output["pred_boxes"]
-    
+    probas = output["pred_logits"].softmax(-1)[0]  # (Q, C+1)
+    boxes = output["pred_boxes"][0].cpu().numpy()  # (Q, 4) normalized cxcywh
+
     for logits, box in zip(probas, boxes):
         max_logit, label = logits[:-1].max(0)
-        if max_logit > conf_threshold:
-            x, y, w, h = box.cpu().numpy()
+        if max_logit.item() > conf_threshold:
+            cx, cy, w, h = box
             predictions.append({
-                "bbox": [float(x - w/2), float(y - h/2), float(w), float(h)],
+                "bbox": [
+                    float((cx - w / 2) * input_size),
+                    float((cy - h / 2) * input_size),
+                    float(w * input_size),
+                    float(h * input_size),
+                ],
                 "score": float(max_logit),
-                "class": int(label)
+                "class": int(label),
             })
     return predictions
 

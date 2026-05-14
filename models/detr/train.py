@@ -113,18 +113,27 @@ def build_dataloaders(args: argparse.Namespace, classes: list[str]):
     return train_loader, val_loader
 
 
-def prepare_targets(targets: list[dict], device: torch.device) -> list[dict]:
-    """Chuẩn bị targets cho DETR training."""
+def prepare_targets(targets: list[dict], device: torch.device, img_size: int) -> list[dict]:
+    """Chuyển targets từ dataset format (xyxy pixel) sang DETR format
+    (cxcywh chuẩn hoá [0,1]) và move sang device."""
     prepared = []
     for target in targets:
+        boxes = target["boxes"].to(device).float()
+        if boxes.numel() > 0:
+            x1, y1, x2, y2 = boxes.unbind(-1)
+            cx = (x1 + x2) * 0.5 / img_size
+            cy = (y1 + y2) * 0.5 / img_size
+            bw = (x2 - x1) / img_size
+            bh = (y2 - y1) / img_size
+            boxes = torch.stack((cx, cy, bw, bh), dim=-1).clamp(0.0, 1.0)
         prepared.append({
             "labels": target["labels"].to(device),
-            "boxes": target["boxes"].to(device),
+            "boxes": boxes,
         })
     return prepared
 
 
-def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, epoch, writer, aux_loss=True):
+def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, epoch, writer, img_size, aux_loss=True):
     """Train một epoch."""
     model.train()
     total_loss = 0
@@ -132,7 +141,7 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
 
     for batch_idx, (images, targets) in enumerate(pbar):
         images = images.to(device)
-        targets = prepare_targets(targets, device)
+        targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
 
@@ -160,14 +169,14 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
 
 
 @torch.no_grad
-def validate(model, dataloader, matcher, criterion, device):
+def validate(model, dataloader, matcher, criterion, device, img_size):
     """Validate model."""
     model.eval()
     total_loss = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
         images = images.to(device)
-        targets = prepare_targets(targets, device)
+        targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
         indices = matcher(outputs, targets)
@@ -192,7 +201,14 @@ def main():
     print(f"[DETR] Using {args.num_queries} object queries")
     print(f"[DETR] Auxiliary loss: {args.aux_loss}")
 
-    model = build_detr(num_classes=num_classes, num_queries=args.num_queries)
+    # Mặc định dùng HuggingFace facebook/detr-resnet-50 COCO-pretrained,
+    # chỉ thay class head cho num_classes của ta — đồng bộ với Faster R-CNN
+    # cũng COCO-pretrained và YOLO ImageNet-pretrained backbone.
+    model = build_detr(
+        num_classes=num_classes,
+        num_queries=args.num_queries,
+        pretrained_coco=True,
+    )
     model.to(device)
 
     checkpoint_dir = Path(args.base_dir) / "checkpoints"
@@ -239,9 +255,10 @@ def main():
 
     for epoch in range(start_epoch, args.epochs):
         train_loss = train_one_epoch(
-            model, train_loader, matcher, criterion, optimizer, device, epoch, writer, args.aux_loss
+            model, train_loader, matcher, criterion, optimizer, device, epoch, writer,
+            args.img_size, args.aux_loss,
         )
-        val_loss = validate(model, val_loader, matcher, criterion, device)
+        val_loss = validate(model, val_loader, matcher, criterion, device, args.img_size)
 
         scheduler.step()
 

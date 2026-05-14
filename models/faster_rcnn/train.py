@@ -133,9 +133,11 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, writer):
 
         target_dicts = []
         for target in targets:
+            # Dataset trả label 0..N-1; Faster R-CNN giữ class 0 cho background.
+            # → cộng 1 để label trở thành 1..N (background = 0).
             target_dict = {
                 "boxes": target["boxes"].to(device),
-                "labels": target["labels"].to(device),
+                "labels": (target["labels"] + 1).to(device),
             }
             if "masks" in target:
                 target_dict["masks"] = target["masks"].to(device)
@@ -174,7 +176,7 @@ def validate(model, dataloader, device):
         for target in targets:
             target_dict = {
                 "boxes": target["boxes"].to(device),
-                "labels": target["labels"].to(device),
+                "labels": (target["labels"] + 1).to(device),
             }
             target_dicts.append(target_dict)
 
@@ -193,8 +195,10 @@ def main():
     classes = get_class_names(Path(args.data_root) / "annotations")
     num_classes = len(classes)
 
-    print(f"[Faster R-CNN] Building model with {num_classes} classes: {classes}")
-    model = build_faster_rcnn(num_classes=num_classes)
+    # Faster R-CNN convention: num_classes bao gồm background (label 0).
+    # → truyền (num_classes + 1). Dataset cần map label về 1..N (xem build_dataloaders).
+    print(f"[Faster R-CNN] Building model with {num_classes} foreground classes + 1 background: {classes}")
+    model = build_faster_rcnn(num_classes=num_classes + 1)
     model.to(device)
 
     checkpoint_dir = Path(args.base_dir) / "checkpoints"
