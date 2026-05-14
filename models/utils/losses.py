@@ -81,18 +81,20 @@ class YOLOLoss(nn.Module):
         return alpha_t * (1 - p_t).pow(gamma)
 
     def _assign_scale_for_box(self, bw_norm: Tensor, bh_norm: Tensor, num_scales: int) -> Tensor:
-        """Heuristic gán mỗi GT vào 1 scale dựa trên area chuẩn hoá [0,1].
-        Convention: predictions[0] = scale to nhất (P3, stride 8), [-1] = nhỏ nhất (P5, stride 32).
-        - Object nhỏ (area < 0.05^2) → scale 0 (P3, lưới to).
-        - Object vừa → scale 1.
-        - Object lớn → scale cuối cùng.
+        """Heuristic gán mỗi GT vào 1 scale dựa trên kích thước lớn nhất của box.
+        Convention: predictions[0] = P3 (stride 8, lưới to), [-1] = P5 (stride 32, lưới nhỏ).
+        - max_side < 0.15 → P3 (object nhỏ, cần lưới chi tiết để localize).
+        - 0.15 ≤ max_side < 0.45 → P4 (object vừa, ~mode của dataset này).
+        - max_side ≥ 0.45 → P5 (object to phủ phần lớn ảnh).
+
+        Dùng max_side thay vì area để chống lệch đối với box dạng "thanh dài"
+        (ví dụ giraffe — chiều cao lớn nhưng chiều rộng nhỏ).
         """
-        area = bw_norm * bh_norm
-        # Ngưỡng: small <0.0025 (0.05*0.05), medium <0.05 (0.22*0.22)
+        max_side = torch.maximum(bw_norm, bh_norm)
         scale_idx = torch.where(
-            area < 0.0025, torch.zeros_like(area, dtype=torch.long),
-            torch.where(area < 0.05, torch.ones_like(area, dtype=torch.long),
-                        torch.full_like(area, num_scales - 1, dtype=torch.long))
+            max_side < 0.15, torch.zeros_like(max_side, dtype=torch.long),
+            torch.where(max_side < 0.45, torch.ones_like(max_side, dtype=torch.long),
+                        torch.full_like(max_side, num_scales - 1, dtype=torch.long))
         )
         return scale_idx.clamp(0, num_scales - 1)
 
