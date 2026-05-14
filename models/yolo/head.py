@@ -54,21 +54,21 @@ class SingleScaleHead(nn.Module):
         )
         self.pred = nn.Conv2d(in_ch, out_ch, kernel_size=1)
 
-        # Bias prior init — quan trọng cho từ-đầu-tới-cuối training ổn định:
-        # - tx, ty: bias=0 → sigmoid=0.5 (center của cell), hợp lý.
-        # - tw, th: bias=-1.27 → sigmoid≈0.22 (xấp xỉ kích thước trung bình
-        #   của object trong dataset: mean bbox ~140px / 640px = 0.22). Prior
-        #   khớp data → ít epoch hơn để model học được kích thước đúng.
-        # - obj  : bias=-4.6 → sigmoid=0.01 (prior negative cell), tránh
-        #   model collapse về "no object everywhere".
-        # - cls  : bias = log(p/(1-p)) với p=1/num_classes (uniform prior).
+        # Bias prior init theo YOLOv5 parameterization mới:
+        #   pred_xy = 2*sigmoid(t) - 0.5     ∈ [-0.5, 1.5]   (offset cell)
+        #   pred_wh = (2*sigmoid(t))**2      ∈ [0, 4]        (fraction of image)
+        # → muốn pred_wh ≈ 0.22 (mean object size) ở init:
+        #   (2*sigmoid(b))^2 = 0.22 → sigmoid(b) ≈ 0.235 → b ≈ -1.18
+        # → muốn pred_xy ≈ 0.5 (center cell): 2*sigmoid(0) - 0.5 = 0.5 ✓ (bias=0).
+        # - obj: sigmoid(-4.6) ≈ 0.01 (negative prior, tránh collapse).
+        # - cls: sigmoid(b) = 1/num_classes (uniform prior).
         import math
         stride_per_anchor = 5 + num_classes
         with torch.no_grad():
             bias = self.pred.bias.view(num_anchors, stride_per_anchor)
             bias.zero_()
-            bias[:, 2] = -1.27  # tw → sigmoid ≈ 0.22 (mean bbox size in this dataset)
-            bias[:, 3] = -1.27  # th → sigmoid ≈ 0.22
+            bias[:, 2] = -1.18  # tw → (2*sigmoid(-1.18))^2 ≈ 0.22
+            bias[:, 3] = -1.18  # th → ≈ 0.22
             bias[:, 4] = -4.6   # obj → sigmoid ≈ 0.01
             cls_prior = max(1.0 / max(num_classes, 1), 1e-3)
             bias[:, 5:] = -math.log((1.0 - cls_prior) / cls_prior)

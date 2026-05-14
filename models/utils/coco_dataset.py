@@ -18,10 +18,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import random
+
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 
 # Default paths từ project root
@@ -51,6 +53,7 @@ class CocoDetection(Dataset):
         self.img_folder = Path(img_folder)
         self.img_size = img_size
         self.return_masks = return_masks
+        self.augment = augment
         self.classes = classes or DEFAULT_CLASSES
         self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
 
@@ -62,6 +65,36 @@ class CocoDetection(Dataset):
         self.img_id_to_annotations = self._build_img_id_map()
 
         self.transform = transform  # model handles resize internally
+
+    def _apply_augment(self, image: Image.Image, boxes: list) -> tuple[Image.Image, list]:
+        """Áp data augmentation lên ảnh ĐÃ resize 640×640 và bbox tương ứng.
+
+        - HorizontalFlip 50%: lật ngang ảnh + flip x của bbox.
+        - ColorJitter ngẫu nhiên: brightness/contrast/saturation (không động vào bbox).
+
+        Lưu ý: chạy SAU khi đã resize tới img_size để bbox tính theo cùng không gian.
+        """
+        W = self.img_size
+
+        # Horizontal flip
+        if random.random() < 0.5:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            flipped = []
+            for x1, y1, x2, y2 in boxes:
+                new_x1 = W - x2
+                new_x2 = W - x1
+                flipped.append([new_x1, y1, new_x2, y2])
+            boxes = flipped
+
+        # Color jitter (chỉ ảnh, không động bbox)
+        if random.random() < 0.5:
+            image = ImageEnhance.Brightness(image).enhance(random.uniform(0.7, 1.3))
+        if random.random() < 0.5:
+            image = ImageEnhance.Contrast(image).enhance(random.uniform(0.7, 1.3))
+        if random.random() < 0.5:
+            image = ImageEnhance.Color(image).enhance(random.uniform(0.7, 1.3))
+
+        return image, boxes
 
     def _build_img_id_map(self) -> dict[int, list[dict]]:
         img_id_map = {}
@@ -119,6 +152,10 @@ class CocoDetection(Dataset):
             # torchvision Faster R-CNN expects xyxy format
             boxes.append([x, y, x + w, y + h])
             labels.append(self.cat_id_to_idx[cat_id])
+
+        # Augmentation chỉ chạy ở train (augment=True). Bbox cùng frame với ảnh.
+        if self.augment and boxes:
+            image, boxes = self._apply_augment(image, boxes)
 
         target = {
             "image_id": torch.tensor([img_id], dtype=torch.int64),

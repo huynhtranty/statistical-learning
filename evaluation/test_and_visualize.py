@@ -268,10 +268,13 @@ def _decode_yolo_single_scale(
     # Reshape to (A, 5+C, H, W)
     pred = pred.view(num_anchors, 5 + num_classes, H, W)
 
-    tx = pred[:, 0, :, :].sigmoid()  # (A, H, W)
-    ty = pred[:, 1, :, :].sigmoid()
-    tw = pred[:, 2, :, :]            # NO sigmoid - raw log-scale
-    th = pred[:, 3, :, :]            # NO sigmoid - raw log-scale
+    # YOLOv5 parameterization:
+    #   pred_xy = 2*sigmoid(t) - 0.5  ∈ [-0.5, 1.5]   (offset trong cell, hỗ trợ neighbor)
+    #   pred_wh = (2*sigmoid(t))^2    ∈ [0, 4]        (fraction of image normalized)
+    tx = 2.0 * pred[:, 0, :, :].sigmoid() - 0.5
+    ty = 2.0 * pred[:, 1, :, :].sigmoid() - 0.5
+    tw = (2.0 * pred[:, 2, :, :].sigmoid()).pow(2)
+    th = (2.0 * pred[:, 3, :, :].sigmoid()).pow(2)
     obj = pred[:, 4, :, :].sigmoid()
     cls = pred[:, 5:, :, :].sigmoid()  # (A, C, H, W)
 
@@ -296,11 +299,12 @@ def _decode_yolo_single_scale(
 
     boxes, scores, labels = [], [], []
     for k in range(len(sel_score)):
+        # xy: offset trong cell × stride → pixel position trong input 640
         xc_in = (cx_grid[k] + float(sel_tx[k])) * stride_x
         yc_in = (cy_grid[k] + float(sel_ty[k])) * stride_y
-        # tw/th are log-scale → exp to get actual scale factor
-        bw_in = float(np.exp(np.clip(sel_tw[k], -4, 4))) * stride_x
-        bh_in = float(np.exp(np.clip(sel_th[k], -4, 4))) * stride_y
+        # wh: fraction of image × input_size
+        bw_in = float(sel_tw[k]) * input_size
+        bh_in = float(sel_th[k]) * input_size
 
         x1_in = xc_in - bw_in / 2
         y1_in = yc_in - bh_in / 2

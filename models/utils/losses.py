@@ -41,9 +41,14 @@ class YOLOLoss(nn.Module):
     """Loss cho kiến trúc YOLO-style.
 
     Cải tiến so với baseline:
+    - Center-region assignment (YOLOv5 style): mỗi GT gán cho 1-3 cell (center +
+      neighbor cùng nửa cell) → tăng số positive samples 1.5-3x → gradient mạnh hơn.
+    - YOLOv5 xy parameterization: pred_xy = 2*sigmoid(tx) - 0.5, range [-0.5, 1.5]
+      cho phép neighbor cells dự đoán center của GT (offset có thể âm/lớn hơn 1).
     - Focal Loss cho objectness (giảm dominance của vô vàn negative cells).
-    - Scale-aware assignment: mỗi GT box chỉ gán vào scale phù hợp với kích thước.
-    - Box loss = 1 - GIoU thay vì SmoothL1 trên (tx,ty,bw,bh) — gradient mạnh hơn.
+    - Focal Loss cho classification (cân bằng 1-vs-N imbalance per cell).
+    - Scale-aware assignment dựa trên max-side của box.
+    - Box loss = (1 - GIoU) + L1 trên (cx, cy, w, h) chuẩn hoá.
     """
 
     def __init__(
@@ -53,7 +58,7 @@ class YOLOLoss(nn.Module):
         image_size: int = 640,
         lambda_noobj: float = 1.0,
         lambda_obj: float = 1.0,
-        lambda_cls: float = 0.5,
+        lambda_cls: float = 1.0,
         lambda_box: float = 5.0,
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
@@ -165,67 +170,138 @@ class YOLOLoss(nn.Module):
                 bw = ((boxes_s[:, 2] - boxes_s[:, 0]) / img_size).clamp(1e-6, 1.0)
                 bh = ((boxes_s[:, 3] - boxes_s[:, 1]) / img_size).clamp(1e-6, 1.0)
 
-                gx = cx * w
-                gy = cy * h
-                gi = torch.floor(gx).long().clamp(0, w - 1)
-                gj = torch.floor(gy).long().clamp(0, h - 1)
-                tx = gx - gi.float()
-                ty = gy - gj.float()
-
                 valid = (labels_s >= 0) & (labels_s < self.num_classes)
                 if valid.sum() == 0:
                     continue
 
-                gi = gi[valid]
-                gj = gj[valid]
-                tx = tx[valid]
-                ty = ty[valid]
+                cx = cx[valid]
+                cy = cy[valid]
                 bw = bw[valid]
                 bh = bh[valid]
                 labels_v = labels_s[valid]
 
-                # Gán positive cho tất cả anchors tại cell tương ứng.
+                # ========= Center-region assignment (YOLOv5 style) =========
+                # Mỗi GT gán cho:
+                # - Center cell (luôn).
+                # - Cell trái (gi-1) NẾU GT center ở nửa trái của cell (gx % 1 < 0.5).
+                # - Cell phải (gi+1) NẾU ở nửa phải.
+                # - Tương tự cho cell trên/dưới.
+                # → 1-3 positive cells / GT thay vì 1.
+                gx = cx * w  # GT center theo đơn vị cell
+                gy = cy * h
+                gi_c = torch.floor(gx).long().clamp(0, w - 1)
+                gj_c = torch.floor(gy).long().clamp(0, h - 1)
+
+                # Offset trong cell (0..1)
+                gx_frac = gx - gi_c.float()
+                gy_frac = gy - gj_c.float()
+
+                # 5 ứng viên: center + 4 neighbors. Mỗi cell sẽ được giữ
+                # nếu thoả điều kiện directional + nằm trong ảnh.
+                # offsets: (di, dj). di âm = cell trái.
+                cand_offsets = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+
+                all_gi: list[Tensor] = []
+                all_gj: list[Tensor] = []
+                all_tx_target: list[Tensor] = []  # offset từ cell tới GT center (xy decoded space)
+                all_ty_target: list[Tensor] = []
+                all_bw: list[Tensor] = []
+                all_bh: list[Tensor] = []
+                all_cx: list[Tensor] = []
+                all_cy: list[Tensor] = []
+                all_labels: list[Tensor] = []
+
+                for di, dj in cand_offsets:
+                    if di == 0 and dj == 0:
+                        keep = torch.ones_like(gx_frac, dtype=torch.bool)
+                    elif di == -1:
+                        keep = gx_frac < 0.5  # nửa trái → dùng cell trái
+                    elif di == 1:
+                        keep = gx_frac >= 0.5
+                    elif dj == -1:
+                        keep = gy_frac < 0.5
+                    elif dj == 1:
+                        keep = gy_frac >= 0.5
+                    else:
+                        keep = torch.ones_like(gx_frac, dtype=torch.bool)
+
+                    if keep.sum() == 0:
+                        continue
+
+                    ngi = (gi_c + di).clamp(0, w - 1)
+                    ngj = (gj_c + dj).clamp(0, h - 1)
+                    # Loại bỏ trùng do clamp (chạm biên ảnh)
+                    in_bounds = ((gi_c[keep] + di) >= 0) & ((gi_c[keep] + di) < w) & \
+                                ((gj_c[keep] + dj) >= 0) & ((gj_c[keep] + dj) < h)
+                    keep_idx = torch.where(keep)[0][in_bounds]
+                    if keep_idx.numel() == 0:
+                        continue
+
+                    all_gi.append(ngi[keep_idx])
+                    all_gj.append(ngj[keep_idx])
+                    # tx_target ở YOLOv5 decoded space [-0.5, 1.5]:
+                    # gx_frac + (di=-1) cho neighbor trái → offset = gx_frac+1, etc.
+                    # Tổng quát: tx_target = gx - new_gi
+                    all_tx_target.append(gx[keep_idx] - ngi[keep_idx].float())
+                    all_ty_target.append(gy[keep_idx] - ngj[keep_idx].float())
+                    all_bw.append(bw[keep_idx])
+                    all_bh.append(bh[keep_idx])
+                    all_cx.append(cx[keep_idx])
+                    all_cy.append(cy[keep_idx])
+                    all_labels.append(labels_v[keep_idx])
+
+                if not all_gi:
+                    continue
+
+                p_gi = torch.cat(all_gi)
+                p_gj = torch.cat(all_gj)
+                p_tx_tgt = torch.cat(all_tx_target)  # range [-0.5, 1.5] sau YOLOv5 expansion
+                p_ty_tgt = torch.cat(all_ty_target)
+                p_bw = torch.cat(all_bw)
+                p_bh = torch.cat(all_bh)
+                p_cx = torch.cat(all_cx)
+                p_cy = torch.cat(all_cy)
+                p_labels = torch.cat(all_labels)
+
+                # ========= Gán positive cho tất cả anchors tại các cell =========
+                cell_size_x = 1.0 / float(w)
+                cell_size_y = 1.0 / float(h)
+
                 for a in range(self.num_anchors):
-                    obj_target[b, a, gj, gi] = 1.0
-                    pos_mask[b, a, gj, gi] = True
-                    cls_target[b, a, labels_v, gj, gi] = 1.0
+                    obj_target[b, a, p_gj, p_gi] = 1.0
+                    pos_mask[b, a, p_gj, p_gi] = True
+                    cls_target[b, a, p_labels, p_gj, p_gi] = 1.0
 
-                    pred_xywh = pred_boxes[b, a, :, gj, gi].transpose(0, 1)
-                    pred_xy = pred_xywh[:, :2].sigmoid()
-                    pred_wh = pred_xywh[:, 2:].sigmoid()
+                    pred_xywh = pred_boxes[b, a, :, p_gj, p_gi].transpose(0, 1)
+                    # YOLOv5 xy: 2*sigmoid(t) - 0.5 → range [-0.5, 1.5]
+                    pred_xy = 2.0 * pred_xywh[:, :2].sigmoid() - 0.5
+                    # YOLOv5 wh: (2*sigmoid(t))^2 → range [0, 4]
+                    pred_wh = (2.0 * pred_xywh[:, 2:].sigmoid()).pow(2)
 
-                    # Build xyxy boxes (toạ độ chuẩn hoá [0,1] toàn ảnh) để tính GIoU.
-                    # Pred center = (gi + sigmoid(tx)) / w, normalized.
-                    cell_size_x = 1.0 / float(w)
-                    cell_size_y = 1.0 / float(h)
-                    pcx = (gi.float() + pred_xy[:, 0]) * cell_size_x
-                    pcy = (gj.float() + pred_xy[:, 1]) * cell_size_y
-                    pw = pred_wh[:, 0]
-                    ph = pred_wh[:, 1]
+                    pcx = (p_gi.float() + pred_xy[:, 0]) * cell_size_x
+                    pcy = (p_gj.float() + pred_xy[:, 1]) * cell_size_y
+                    pw = pred_wh[:, 0].clamp(min=1e-6, max=4.0)
+                    ph = pred_wh[:, 1].clamp(min=1e-6, max=4.0)
+
                     pred_xyxy = torch.stack(
                         (pcx - pw / 2, pcy - ph / 2, pcx + pw / 2, pcy + ph / 2),
                         dim=1,
                     )
-                    tcx = cx[valid]
-                    tcy = cy[valid]
                     tgt_xyxy = torch.stack(
-                        (tcx - bw / 2, tcy - bh / 2, tcx + bw / 2, tcy + bh / 2),
+                        (p_cx - p_bw / 2, p_cy - p_bh / 2,
+                         p_cx + p_bw / 2, p_cy + p_bh / 2),
                         dim=1,
                     )
                     giou = generalized_box_iou(pred_xyxy, tgt_xyxy)
                     giou_diag = giou.diagonal()
 
-                    # Box loss = GIoU + L1 trên (cx, cy, w, h) chuẩn hoá.
-                    # L1 cho gradient tuyến tính trên từng coordinate, đặc biệt
-                    # giúp khi GIoU saturate (pred nằm hoàn toàn trong GT) —
-                    # đây là lý do model cố thủ ở prior wh nhỏ.
                     pred_cxcywh = torch.stack((pcx, pcy, pw, ph), dim=1)
-                    tgt_cxcywh = torch.stack((tcx, tcy, bw, bh), dim=1)
+                    tgt_cxcywh = torch.stack((p_cx, p_cy, p_bw, p_bh), dim=1)
                     l1_per_box = (pred_cxcywh - tgt_cxcywh).abs().sum(dim=1)
 
                     box_loss = box_loss + (1.0 - giou_diag).sum() + l1_per_box.sum()
 
-                total_pos += int(gi.numel()) * self.num_anchors
+                total_pos += int(p_gi.numel()) * self.num_anchors
 
             # ---- Objectness loss với Focal weighting ----
             obj_bce = self.bce_obj(pred_obj, obj_target)

@@ -103,7 +103,12 @@ def predict_yolo(model: nn.Module, image_tensor: torch.Tensor, device: str,
 
         obj = pred[:, 4, :, :].sigmoid()
         cls = pred[:, 5:, :, :].sigmoid()
-        box = pred[:, :4, :, :].sigmoid()
+        # YOLOv5 parameterization (đồng bộ với YOLOLoss):
+        #   pred_xy = 2*sigmoid(t) - 0.5  ∈ [-0.5, 1.5]
+        #   pred_wh = (2*sigmoid(t))^2    ∈ [0, 4]
+        raw_box = pred[:, :4, :, :].sigmoid()
+        box_xy = 2.0 * raw_box[:, :2, :, :] - 0.5
+        box_wh = (2.0 * raw_box[:, 2:, :, :]).pow(2)
         stride_x = input_size / float(w)
         stride_y = input_size / float(h)
 
@@ -118,11 +123,14 @@ def predict_yolo(model: nn.Module, image_tensor: torch.Tensor, device: str,
             score = float(best_score[a, y, x])
             label = int(best_cls[a, y, x])
 
-            tx, ty, tw, th = box[a, :, y, x]
-            cx = (x + float(tx)) * stride_x
-            cy = (y + float(ty)) * stride_y
-            bw = float(tw) * input_size
-            bh = float(th) * input_size
+            tx = float(box_xy[a, 0, y, x])
+            ty = float(box_xy[a, 1, y, x])
+            tw = float(box_wh[a, 0, y, x])
+            th = float(box_wh[a, 1, y, x])
+            cx = (x + tx) * stride_x
+            cy = (y + ty) * stride_y
+            bw = tw * input_size
+            bh = th * input_size
 
             predictions.append({
                 "bbox": [float(cx - bw / 2.0), float(cy - bh / 2.0), float(bw), float(bh)],

@@ -151,6 +151,35 @@ python models/detr/train.py --data_root data --epochs 10 --batch_size 4 --output
 
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
 
+## Debug / Sanity Check (YOLO)
+
+Khi YOLO ra detection sai (bbox lệch, class sai, conf thấp), chạy 3 scripts dưới đây theo thứ tự để cô lập bug:
+
+| Script | Khi nào dùng | Healthy signal |
+|---|---|---|
+| `scripts/visualize_dataset.py` | Đầu tiên — verify GT từ DataLoader đúng | Bbox phải nằm đúng object trên ảnh |
+| `scripts/debug_one_batch.py` | Sau khi GT đúng — kiểm tra forward + gradient | Images [0,1], obj prior ≈ 0.01, tw grad > 0.001 |
+| `scripts/overfit_one_batch.py` | Cuối cùng — verify model + loss học được | Loss giảm < 0.5 sau ~500 steps |
+
+```bash
+# 1) Vẽ GT từ dataloader (kèm augmentation)
+python scripts/visualize_dataset.py --data_root data --split train \
+  --output /tmp/gt_check --num 12 --augment
+
+# 2) Inspect 1 batch (untrained or với checkpoint)
+python scripts/debug_one_batch.py --data_root data --device cuda
+python scripts/debug_one_batch.py --data_root data --weights weights/yolo.pt --device cuda
+
+# 3) Overfit 1 batch để xác nhận pipeline học được
+python scripts/overfit_one_batch.py --data_root data --batch_size 2 \
+  --steps 500 --lr 1e-3 --device cuda
+```
+
+**Nếu**:
+- GT vẽ sai vị trí → bug ở dataset/resize/augment.
+- GT đúng nhưng overfit loss kẹt > 1.0 → bug ở loss/model.
+- Overfit OK nhưng full train val_loss flat → underfit, cần thêm epochs/data.
+
 ## Evaluate
 
 ### Các scripts trong folder evaluation
