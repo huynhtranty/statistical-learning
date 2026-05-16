@@ -219,8 +219,8 @@ def _nms(boxes: list, scores: list, labels: list,
             continue
 
         # Convert to tensor for NMS
-        boxes_arr = torch.tensor([item[0] for item in items])  # (N, 4) xywh
-        scores_arr = torch.tensor([item[1] for item in items])
+        boxes_arr = torch.tensor([item[0] for item in items], dtype=torch.float32)  # (N, 4) xywh
+        scores_arr = torch.tensor([item[1] for item in items], dtype=torch.float32)
 
         # Convert xywh to xyxy for NMS
         xyxy = torch.zeros_like(boxes_arr)
