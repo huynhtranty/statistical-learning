@@ -212,6 +212,7 @@ def decode_predictions(
     predictions: list[torch.Tensor],
     conf_threshold: float = 0.25,
     num_classes: int = 5,
+    img_size: int = 640,
 ) -> list[list[dict]]:
     """Decode YOLO predictions thành list of boxes.
 
@@ -254,7 +255,7 @@ def decode_predictions(
                 tw = anchor_pred[2]
                 th = anchor_pred[3]
                 obj = torch.sigmoid(anchor_pred[4])  # (H, W)
-                cls = torch.softmax(anchor_pred[5:5+num_classes], dim=0)  # (C, H, W)
+                cls = torch.sigmoid(anchor_pred[5:5+num_classes])  # (C, H, W)
 
                 # YOLOv5 decode: bbox coordinates trong feature map
                 # pred_xy = 2*sigmoid(tx) - 0.5 ∈ [-0.5, 1.5]
@@ -275,8 +276,10 @@ def decode_predictions(
                 # Absolute coordinates trong feature map
                 gx = (x_grid + bx) * stride
                 gy = (y_grid + by) * stride
-                gw = bw * stride
-                gh = bh * stride
+                # YOLOLoss optimize pred_wh as fraction of image size,
+                # nên cần scale theo img_size (không phải stride).
+                gw = bw * float(img_size)
+                gh = bh * float(img_size)
 
                 # Convert xywh -> xyxy (top-left, bottom-right)
                 x1 = gx - gw / 2
@@ -300,7 +303,15 @@ def decode_predictions(
                 scores = confidence[mask].detach().cpu().numpy()
                 classes = top_cls[mask].detach().cpu().numpy()
 
+                # Clamp về frame ảnh input để tránh box âm/vượt khung làm IoU sai.
+                x1_filtered = np.clip(x1_filtered, 0.0, float(img_size))
+                y1_filtered = np.clip(y1_filtered, 0.0, float(img_size))
+                x2_filtered = np.clip(x2_filtered, 0.0, float(img_size))
+                y2_filtered = np.clip(y2_filtered, 0.0, float(img_size))
+
                 for i in range(len(scores)):
+                    if x2_filtered[i] <= x1_filtered[i] or y2_filtered[i] <= y1_filtered[i]:
+                        continue
                     batch_boxes.append({
                         "bbox": [float(x1_filtered[i]), float(y1_filtered[i]),
                                  float(x2_filtered[i]), float(y2_filtered[i])],
@@ -409,7 +420,12 @@ def evaluate_model(
             outputs = model(images)
 
             # Decode predictions từ YOLO output
-            predictions = decode_predictions(outputs, conf_threshold, num_classes)
+            predictions = decode_predictions(
+                outputs,
+                conf_threshold=conf_threshold,
+                num_classes=num_classes,
+                img_size=img_size,
+            )
 
             for img_idx, img_preds in enumerate(predictions):
                 # Lấy image_id từ target (là tensor [img_id])

@@ -13,7 +13,21 @@ model:
   num_decoder_layers: 6
   classes: ["cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
 
+inference:
+  conf_threshold: 0.7        # Confidence threshold cho predictions (0.0 - 1.0)
+  iou_threshold: 0.5        # IoU threshold cho NMS (0.0 - 1.0)
+
+training:
+  batch_size: 4
+  num_workers: 4
+  epochs: 50
+  lr: 0.0001               # Learning rate (thường thấp hơn YOLO)
+  weight_decay: 0.0001      # Weight decay cho optimizer
+
+loss:
+  cost_class: 1.0          # Trọng số loss classification
+  cost_bbox: 5.0            # Trọng số L1 loss cho bbox
+  cost_giou: 2.0           # Trọng số GIoU loss
+
 # TODO: Thêm cấu hình optimizer (AdamW, learning rate riêng cho backbone và transformer).
 # TODO: Thêm cấu hình scheduler và gradient clipping.
-# TODO: Thêm cấu hình trọng số loss (cost_class, cost_bbox, cost_giou).
-# TODO: Thêm cấu hình dataset và data augmentation.

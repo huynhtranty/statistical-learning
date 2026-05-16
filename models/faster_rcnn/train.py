@@ -167,7 +167,7 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, writer):
 @torch.no_grad()
 def validate(model, dataloader, device):
     """Validate model."""
-    model.eval()
+    model.train()
     total_loss = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
@@ -187,6 +187,7 @@ def validate(model, dataloader, device):
 
         total_loss += losses.item()
 
+    model.eval()
     return total_loss / len(dataloader)
 
 
