@@ -28,6 +28,7 @@ from tqdm import tqdm
 
 import torch
 import torch.optim as optim
+import torchvision.ops
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -36,6 +37,7 @@ from models.detr.model import build_detr
 from models.utils.coco_dataset import get_coco_dataloaders, get_class_names, CocoDetection, collate_fn
 from models.utils.losses import SetCriterion
 from models.detr.matcher import HungarianMatcher
+from models.utils.detection_metrics import evaluate_detection_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,10 +64,14 @@ def parse_args() -> argparse.Namespace:
                     help="Đường dẫn checkpoint để resume training")
     p.add_argument("--augment", action="store_true",
                     help="Sử dụng data augmentation (RandomHorizontalFlip, ColorJitter, RandomRotation)")
-    p.add_argument("--aux_loss", action="store_true", default=True,
-                    help="Sử dụng auxiliary loss từ mỗi decoder layer")
+    p.add_argument("--aux_loss", action=argparse.BooleanOptionalAction, default=True,
+                    help="Bật/tắt auxiliary loss từ mỗi decoder layer")
     p.add_argument("--output", type=str, default=None,
                     help="Đường dẫn lưu checkpoint cuối cùng")
+    p.add_argument("--conf_threshold", type=float, default=0.25,
+                    help="Confidence threshold cho evaluation mAP")
+    p.add_argument("--iou_threshold", type=float, default=0.5,
+                    help="IoU threshold cho mAP")
     return p.parse_args()
 
 
@@ -190,6 +196,69 @@ def validate(model, dataloader, matcher, criterion, device, img_size):
     return total_loss / len(dataloader)
 
 
+@torch.no_grad()
+def evaluate_model(model, dataloader, device, num_classes: int, img_size: int, conf_threshold: float, iou_threshold: float):
+    model.eval()
+    all_predictions: list[list[dict]] = []
+    all_targets: list[dict] = []
+
+    for images, targets in tqdm(dataloader, desc="Evaluating mAP"):
+        images = images.to(device)
+        outputs = model(images)
+
+        pred_logits = outputs["pred_logits"]  # (B, Q, C+1)
+        pred_boxes = outputs["pred_boxes"]    # (B, Q, 4) normalized cxcywh
+        probas = pred_logits.softmax(-1)
+
+        for b_idx, target in enumerate(targets):
+            boxes_norm = pred_boxes[b_idx].detach().cpu()
+            probs = probas[b_idx].detach().cpu()
+
+            scores, labels = probs[:, :-1].max(dim=-1)
+            keep = scores >= conf_threshold
+            boxes_norm = boxes_norm[keep]
+            scores = scores[keep]
+            labels = labels[keep]
+
+            pred_list: list[dict] = []
+            if boxes_norm.numel() > 0:
+                cx = boxes_norm[:, 0] * img_size
+                cy = boxes_norm[:, 1] * img_size
+                bw = boxes_norm[:, 2] * img_size
+                bh = boxes_norm[:, 3] * img_size
+                x1 = (cx - bw / 2.0).clamp(0.0, float(img_size))
+                y1 = (cy - bh / 2.0).clamp(0.0, float(img_size))
+                x2 = (cx + bw / 2.0).clamp(0.0, float(img_size))
+                y2 = (cy + bh / 2.0).clamp(0.0, float(img_size))
+                boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=1)
+
+                valid = (boxes_xyxy[:, 2] > boxes_xyxy[:, 0]) & (boxes_xyxy[:, 3] > boxes_xyxy[:, 1])
+                boxes_xyxy = boxes_xyxy[valid]
+                scores = scores[valid]
+                labels = labels[valid]
+
+                if boxes_xyxy.numel() > 0:
+                    keep_idx = torchvision.ops.batched_nms(boxes_xyxy, scores, labels, iou_threshold)
+                    for idx in keep_idx.tolist():
+                        lb = int(labels[idx].item())
+                        if lb < 0 or lb >= num_classes:
+                            continue
+                        bx = boxes_xyxy[idx].tolist()
+                        pred_list.append({
+                            "bbox": [float(bx[0]), float(bx[1]), float(bx[2]), float(bx[3])],
+                            "score": float(scores[idx].item()),
+                            "class": lb,
+                        })
+
+            all_predictions.append(pred_list)
+            all_targets.append({
+                "boxes": target["boxes"].detach().cpu().tolist(),
+                "labels": target["labels"].detach().cpu().tolist(),
+            })
+
+    return evaluate_detection_metrics(all_predictions, all_targets, num_classes, iou_threshold=iou_threshold)
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
@@ -238,6 +307,7 @@ def main():
 
     start_epoch = 0
     best_val_loss = float("inf")
+    best_map = 0.0
 
     if args.resume:
         print(f"[DETR] Resuming from checkpoint: {args.resume}")
@@ -246,6 +316,7 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        best_map = checkpoint.get("best_map", 0.0)
 
     print(f"[DETR] Starting training for {args.epochs} epochs...")
     print(f"[DETR] Device: {device}")
@@ -259,16 +330,32 @@ def main():
             args.img_size, args.aux_loss,
         )
         val_loss = validate(model, val_loader, matcher, criterion, device, args.img_size)
+        metrics = evaluate_model(
+            model,
+            val_loader,
+            device=device,
+            num_classes=num_classes,
+            img_size=args.img_size,
+            conf_threshold=args.conf_threshold,
+            iou_threshold=args.iou_threshold,
+        )
 
         scheduler.step()
 
         writer.add_scalar("epoch/train_loss", train_loss, epoch)
         writer.add_scalar("epoch/val_loss", val_loss, epoch)
+        writer.add_scalar("epoch/mAP", metrics["mAP"], epoch)
+        writer.add_scalar("epoch/mean_iou", metrics["mean_iou"], epoch)
         writer.add_scalar("epoch/lr", scheduler.get_last_lr()[0], epoch)
 
-        print(f"[DETR] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
+        print(
+            f"[DETR] Epoch {epoch}: train_loss={train_loss:.4f}, "
+            f"val_loss={val_loss:.4f}, mAP={metrics['mAP']:.4f}, "
+            f"mean_iou={metrics['mean_iou']:.4f}, lr={scheduler.get_last_lr()[0]:.6f}"
+        )
 
-        if val_loss < best_val_loss:
+        if metrics["mAP"] > best_map:
+            best_map = metrics["mAP"]
             best_val_loss = val_loss
             best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
@@ -276,10 +363,11 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
+                "best_map": best_map,
                 "classes": classes,
                 "num_queries": args.num_queries,
             }, best_checkpoint_path)
-            print(f"[DETR] Saved best model to {best_checkpoint_path}")
+            print(f"[DETR] Saved best model (mAP={best_map:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)
@@ -288,6 +376,7 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
+                "best_map": best_map,
                 "classes": classes,
                 "num_queries": args.num_queries,
             }, final_path)

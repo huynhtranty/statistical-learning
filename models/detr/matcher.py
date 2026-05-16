@@ -110,7 +110,19 @@ class HungarianMatcher(nn.Module):
         sizes = [len(t["boxes"]) for t in targets]
         indices = []
         for i, c in enumerate(cost_matrix.split(sizes, dim=-1)):
-            c_i = c[i]  # (num_queries, num_targets_i)
+            c_i = c[i].contiguous()  # (num_queries, num_targets_i)
+
+            # Handle empty targets: no objects in this image
+            if sizes[i] == 0:
+                indices.append((
+                    torch.tensor([], dtype=torch.long),
+                    torch.tensor([], dtype=torch.long),
+                ))
+                continue
+
+            # Replace NaN/Inf with large finite values to prevent Hungarian solver crash
+            c_i = torch.where(torch.isfinite(c_i), c_i, torch.full_like(c_i, 1e6))
+
             pred_idx, tgt_idx = linear_sum_assignment(c_i.numpy())
             indices.append((
                 torch.as_tensor(pred_idx, dtype=torch.long),

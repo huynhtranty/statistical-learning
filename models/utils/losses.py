@@ -466,10 +466,13 @@ class SetCriterion(nn.Module):
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="mean")
-        loss_giou = 1 - torch.diag(generalized_box_iou(
+        giou = generalized_box_iou(
             cxcywh_to_xyxy(src_boxes),
             cxcywh_to_xyxy(target_boxes)
-        )).mean()
+        )
+        giou_diag = torch.diag(giou)
+        # Clamp to [-1, 1] range (GIoU can be -1 for completely non-overlapping boxes)
+        loss_giou = (1.0 - giou_diag.clamp(-1.0, 1.0)).mean()
 
         losses = {
             "loss_bbox": loss_bbox,

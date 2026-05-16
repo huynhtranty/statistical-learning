@@ -28,12 +28,14 @@ from tqdm import tqdm
 
 import torch
 import torch.optim as optim
+import torchvision.ops
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from models.faster_rcnn.model import build_faster_rcnn
 from models.utils.coco_dataset import get_coco_dataloaders, get_class_names, CocoDetection, collate_fn
+from models.utils.detection_metrics import evaluate_detection_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +62,10 @@ def parse_args() -> argparse.Namespace:
                     help="Sử dụng data augmentation (RandomHorizontalFlip, ColorJitter, RandomRotation)")
     p.add_argument("--output", type=str, default=None,
                     help="Đường dẫn lưu checkpoint cuối cùng")
+    p.add_argument("--conf_threshold", type=float, default=0.25,
+                    help="Confidence threshold cho evaluation mAP")
+    p.add_argument("--iou_threshold", type=float, default=0.5,
+                    help="IoU threshold cho mAP")
     return p.parse_args()
 
 
@@ -191,6 +197,49 @@ def validate(model, dataloader, device):
     return total_loss / len(dataloader)
 
 
+@torch.no_grad()
+def evaluate_model(model, dataloader, device, num_classes: int, conf_threshold: float, iou_threshold: float):
+    model.eval()
+    all_predictions: list[list[dict]] = []
+    all_targets: list[dict] = []
+
+    for images, targets in tqdm(dataloader, desc="Evaluating mAP"):
+        images_dev = list(images.to(device))
+        outputs = model(images_dev)
+
+        for out, target in zip(outputs, targets):
+            boxes = out["boxes"].detach().cpu()
+            scores = out["scores"].detach().cpu()
+            labels = out["labels"].detach().cpu() - 1  # 1..N -> 0..N-1
+
+            keep = scores >= conf_threshold
+            boxes = boxes[keep]
+            scores = scores[keep]
+            labels = labels[keep]
+
+            pred_list: list[dict] = []
+            if boxes.numel() > 0:
+                keep_idx = torchvision.ops.batched_nms(boxes, scores, labels, iou_threshold)
+                for idx in keep_idx.tolist():
+                    lb = int(labels[idx].item())
+                    if lb < 0 or lb >= num_classes:
+                        continue
+                    bx = boxes[idx].tolist()
+                    pred_list.append({
+                        "bbox": [float(bx[0]), float(bx[1]), float(bx[2]), float(bx[3])],
+                        "score": float(scores[idx].item()),
+                        "class": lb,
+                    })
+
+            all_predictions.append(pred_list)
+            all_targets.append({
+                "boxes": target["boxes"].detach().cpu().tolist(),
+                "labels": target["labels"].detach().cpu().tolist(),
+            })
+
+    return evaluate_detection_metrics(all_predictions, all_targets, num_classes, iou_threshold=iou_threshold)
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
@@ -223,6 +272,7 @@ def main():
 
     start_epoch = 0
     best_val_loss = float("inf")
+    best_map = 0.0
 
     if args.resume:
         print(f"[Faster R-CNN] Resuming from checkpoint: {args.resume}")
@@ -231,6 +281,7 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        best_map = checkpoint.get("best_map", 0.0)
 
     print(f"[Faster R-CNN] Starting training for {args.epochs} epochs...")
     print(f"[Faster R-CNN] Device: {device}")
@@ -243,16 +294,31 @@ def main():
             model, train_loader, optimizer, device, epoch, writer
         )
         val_loss = validate(model, val_loader, device)
+        metrics = evaluate_model(
+            model,
+            val_loader,
+            device,
+            num_classes=num_classes,
+            conf_threshold=args.conf_threshold,
+            iou_threshold=args.iou_threshold,
+        )
 
         scheduler.step()
 
         writer.add_scalar("epoch/train_loss", train_loss, epoch)
         writer.add_scalar("epoch/val_loss", val_loss, epoch)
+        writer.add_scalar("epoch/mAP", metrics["mAP"], epoch)
+        writer.add_scalar("epoch/mean_iou", metrics["mean_iou"], epoch)
         writer.add_scalar("epoch/lr", scheduler.get_last_lr()[0], epoch)
 
-        print(f"[Faster R-CNN] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
+        print(
+            f"[Faster R-CNN] Epoch {epoch}: train_loss={train_loss:.4f}, "
+            f"val_loss={val_loss:.4f}, mAP={metrics['mAP']:.4f}, "
+            f"mean_iou={metrics['mean_iou']:.4f}, lr={scheduler.get_last_lr()[0]:.6f}"
+        )
 
-        if val_loss < best_val_loss:
+        if metrics["mAP"] > best_map:
+            best_map = metrics["mAP"]
             best_val_loss = val_loss
             best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
@@ -260,9 +326,10 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
+                "best_map": best_map,
                 "classes": classes,
             }, best_checkpoint_path)
-            print(f"[Faster R-CNN] Saved best model to {best_checkpoint_path}")
+            print(f"[Faster R-CNN] Saved best model (mAP={best_map:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)
@@ -271,6 +338,7 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
+                "best_map": best_map,
                 "classes": classes,
             }, final_path)
             print(f"[Faster R-CNN] Saved final model to {final_path}")
