@@ -28,7 +28,7 @@ import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Any
 
 import numpy as np
 import torch
@@ -296,17 +296,182 @@ def compute_iou(box1: list[float], box2: list[float]) -> float:
     return inter_area / union_area if union_area > 0 else 0.0
 
 
+def _coerce_int(value: Any) -> Any:
+    try:
+        if value is None:
+            return value
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _collect_category_ids(predictions: list[dict], ground_truths: list[dict]) -> list[int]:
+    cat_ids = sorted({
+        _coerce_int(gt.get("category_id"))
+        for gt in ground_truths
+        if gt.get("category_id") is not None
+    })
+    cat_ids = [c for c in cat_ids if isinstance(c, int)]
+    if cat_ids:
+        return cat_ids
+    pred_ids = sorted({
+        _coerce_int(pred.get("category_id"))
+        for pred in predictions
+        if pred.get("category_id") is not None
+    })
+    return [c for c in pred_ids if isinstance(c, int)]
+
+
+def normalize_predictions(raw_predictions: Any) -> list[dict]:
+    if raw_predictions is None:
+        return []
+
+    predictions: list[dict] = []
+
+    if isinstance(raw_predictions, dict) and "predictions" in raw_predictions:
+        raw_predictions = raw_predictions.get("predictions", [])
+
+    if isinstance(raw_predictions, list):
+        for item in raw_predictions:
+            if isinstance(item, dict) and "predictions" in item:
+                image_id = item.get("image_id")
+                for det in item.get("predictions", []):
+                    if not isinstance(det, dict):
+                        continue
+                    det = dict(det)
+                    if "image_id" not in det:
+                        det["image_id"] = image_id
+                    predictions.append(det)
+            elif isinstance(item, dict):
+                predictions.append(item)
+
+    cleaned: list[dict] = []
+    for pred in predictions:
+        if "category_id" not in pred and "class" in pred:
+            pred = dict(pred)
+            pred["category_id"] = pred.pop("class")
+
+        image_id = _coerce_int(pred.get("image_id"))
+        category_id = _coerce_int(pred.get("category_id"))
+
+        if "bbox" not in pred or "score" not in pred:
+            continue
+        if image_id is None or category_id is None:
+            continue
+
+        pred = dict(pred)
+        pred["image_id"] = image_id
+        pred["category_id"] = category_id
+        cleaned.append(pred)
+
+    return cleaned
+
+
+def normalize_ground_truths(raw_ground_truths: Any) -> tuple[list[dict], dict | None]:
+    if raw_ground_truths is None:
+        return [], None
+
+    coco_dict = raw_ground_truths if isinstance(raw_ground_truths, dict) else None
+    if coco_dict is not None:
+        gts = coco_dict.get("annotations", [])
+    else:
+        gts = raw_ground_truths
+
+    cleaned: list[dict] = []
+    if isinstance(gts, list):
+        for gt in gts:
+            if not isinstance(gt, dict):
+                continue
+            gt = dict(gt)
+            gt["image_id"] = _coerce_int(gt.get("image_id", gt.get("id", 0)))
+            gt["category_id"] = _coerce_int(gt.get("category_id"))
+            cleaned.append(gt)
+
+    return cleaned, coco_dict
+
+
+def compute_coco_metrics(
+    predictions: list[dict],
+    coco_ground_truths: dict,
+) -> tuple[MetricSet | None, list[str]]:
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except ImportError:
+        return None, []
+
+    if not coco_ground_truths or "annotations" not in coco_ground_truths:
+        return None, []
+
+    coco_gt = COCO()
+    coco_gt.dataset = coco_ground_truths
+    coco_gt.createIndex()
+
+    coco_predictions: list[dict] = []
+    for pred in predictions:
+        try:
+            image_id = int(pred.get("image_id"))
+            category_id = int(pred.get("category_id"))
+        except (TypeError, ValueError):
+            continue
+        bbox = pred.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        coco_predictions.append({
+            "image_id": image_id,
+            "category_id": category_id,
+            "bbox": [float(x) for x in bbox],
+            "score": float(pred.get("score", 0.0)),
+        })
+
+    if not coco_predictions:
+        return None, []
+
+    coco_dt = coco_gt.loadRes(coco_predictions)
+    coco_eval = COCOeval(coco_gt, coco_dt, iouType="bbox")
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+
+    metrics = MetricSet(
+        mAP_50=float(coco_eval.stats[1]),
+        mAP_50_95=float(coco_eval.stats[0]),
+        mAP_75=float(coco_eval.stats[2]),
+    )
+
+    cat_id_to_name = {
+        int(cat.get("id")): str(cat.get("name"))
+        for cat in coco_ground_truths.get("categories", [])
+        if cat.get("id") is not None and cat.get("name") is not None
+    }
+    per_class_ap: dict[str, float] = {}
+    precisions = coco_eval.eval.get("precision")
+    if precisions is not None:
+        cat_ids = coco_eval.params.catIds
+        for idx, cat_id in enumerate(cat_ids):
+            precision = precisions[:, :, idx, 0, 2]
+            precision = precision[precision > -1]
+            ap = float(np.mean(precision)) if precision.size else 0.0
+            cls_name = cat_id_to_name.get(int(cat_id), f"class_{cat_id}")
+            per_class_ap[cls_name] = ap
+
+    metrics.per_class_ap = per_class_ap
+    labels = [cat_id_to_name.get(int(cid), f"class_{cid}") for cid in coco_eval.params.catIds]
+    return metrics, labels
+
+
 def compute_metrics_from_predictions(
     predictions: list[dict],
     ground_truths: list[dict],
     iou_threshold: float = 0.5,
-    num_classes: int = 5,
+    num_classes: int | None = None,
 ) -> tuple[MetricSet, list[str]]:
     """Compute mAP, Precision, Recall from predictions and ground truths."""
-    labels = [f"class_{i}" for i in range(num_classes)]
+    category_ids = _collect_category_ids(predictions, ground_truths)
+    labels = [f"class_{cat_id}" for cat_id in category_ids]
 
     # Group by image
-    gt_by_image: dict[int, list[dict]] = {}
+    gt_by_image: dict[Any, list[dict]] = {}
     for gt in ground_truths:
         img_id = gt.get("image_id", gt.get("id", 0))
         gt_by_image.setdefault(img_id, []).append(gt)
@@ -316,7 +481,7 @@ def compute_metrics_from_predictions(
 
     tp = np.zeros(len(predictions_sorted))
     fp = np.zeros(len(predictions_sorted))
-    matched_gt: set[tuple[int, int]] = set()  # (image_id, gt_idx)
+    matched_gt: set[tuple[Any, int]] = set()  # (image_id, gt_idx)
 
     for pred_idx, pred in enumerate(predictions_sorted):
         img_id = pred.get("image_id", 0)
@@ -375,10 +540,10 @@ def compute_metrics_from_predictions(
 
     # Per-class AP (simplified)
     per_class_ap = {}
-    for cls_id in range(num_classes):
+    for cls_id in category_ids:
         cls_preds = [p for p in predictions_sorted if p.get("category_id") == cls_id]
         if len(cls_preds) > 0:
-            per_class_ap[labels[cls_id]] = ap * 0.9  # Simplified
+            per_class_ap[f"class_{cls_id}"] = ap * 0.9  # Simplified
 
     return MetricSet(
         precision=final_precision,
@@ -402,13 +567,19 @@ def compute_confusion_matrix(
     iou_threshold: float = 0.5,
 ) -> ConfusionMatrixResult:
     """Compute confusion matrix for detection."""
-    labels = [f"class_{i}" for i in range(num_classes)]
+    category_ids = _collect_category_ids(predictions, ground_truths)
+    if not category_ids:
+        return ConfusionMatrixResult()
+
+    cat_id_to_idx = {cat_id: idx for idx, cat_id in enumerate(category_ids)}
+    num_classes = len(category_ids)
+    labels = [f"class_{cat_id}" for cat_id in category_ids]
 
     # Initialize matrix
     cm = np.zeros((num_classes + 1, num_classes + 1), dtype=int)  # +1 for background/no-match
 
     # Group by image
-    gt_by_image: dict[int, list[dict]] = {}
+    gt_by_image: dict[Any, list[dict]] = {}
     for gt in ground_truths:
         img_id = gt.get("image_id", gt.get("id", 0))
         gt_by_image.setdefault(img_id, []).append(gt)
@@ -416,7 +587,10 @@ def compute_confusion_matrix(
     # Match predictions to ground truths
     for pred in predictions:
         img_id = pred.get("image_id", 0)
-        pred_cls = pred.get("category_id", -1)
+        pred_cls_id = pred.get("category_id", -1)
+        if pred_cls_id not in cat_id_to_idx:
+            continue
+        pred_cls = cat_id_to_idx[pred_cls_id]
         gt_list = gt_by_image.get(img_id, [])
         matched = False
 
@@ -425,7 +599,10 @@ def compute_confusion_matrix(
                 continue
             iou = compute_iou(pred.get("bbox", []), gt.get("bbox", []))
             if iou >= iou_threshold:
-                cm[pred_cls][gt.get("category_id", 0)] += 1
+                gt_cls_id = gt.get("category_id", 0)
+                if gt_cls_id not in cat_id_to_idx:
+                    continue
+                cm[pred_cls][cat_id_to_idx[gt_cls_id]] += 1
                 matched = True
                 break
 
@@ -445,7 +622,10 @@ def compute_confusion_matrix(
                 matched = True
                 break
         if not matched:
-            cm[num_classes][gt.get("category_id", 0)] += 1
+            gt_cls_id = gt.get("category_id", 0)
+            if gt_cls_id not in cat_id_to_idx:
+                continue
+            cm[num_classes][cat_id_to_idx[gt_cls_id]] += 1
 
     total_tp = int(np.sum(np.diag(cm[:-1, :-1])))
     total_fp = int(np.sum(cm[:-1, -1]))
@@ -518,8 +698,9 @@ def compute_pr_curve(
         precision_curve.append(prec)
         recall_curve.append(rec)
 
-    # AUC-PR (trapezoid rule)
-    auc_pr = float(np.trapz(precision_curve, recall_curve))
+    # AUC-PR (trapezoid rule). numpy>=2.0 đổi tên np.trapz → np.trapezoid.
+    trapezoid = getattr(np, "trapezoid", None) or np.trapz
+    auc_pr = float(trapezoid(precision_curve, recall_curve))
     avg_precision = float(np.mean(precision_curve[:len(precision_curve)//2]))
 
     return PREurveResult(
@@ -540,8 +721,8 @@ def evaluate_model(
     weights_path: Path | None,
     device: str,
     input_size: int = INPUT_SIZE,
-    predictions: list[dict] | None = None,
-    ground_truths: list[dict] | None = None,
+    predictions: list[dict] | dict | None = None,
+    ground_truths: list[dict] | dict | None = None,
     num_classes: int = 5,
     speed_iters: int = 200,
 ) -> ModelEvaluation:
@@ -560,14 +741,24 @@ def evaluate_model(
     confusion = None
     pr_curve = None
 
-    if predictions and ground_truths:
-        metrics, labels = compute_metrics_from_predictions(
-            predictions, ground_truths, num_classes=num_classes
+    pred_list = normalize_predictions(predictions)
+    gt_list, coco_gt = normalize_ground_truths(ground_truths)
+
+    if pred_list and gt_list:
+        metrics, _ = compute_metrics_from_predictions(
+            pred_list, gt_list, num_classes=num_classes
         )
         confusion = compute_confusion_matrix(
-            predictions, ground_truths, num_classes=num_classes
+            pred_list, gt_list, num_classes=num_classes
         )
-        pr_curve = compute_pr_curve(predictions, ground_truths)
+        pr_curve = compute_pr_curve(pred_list, gt_list)
+
+        coco_metrics, _ = (compute_coco_metrics(pred_list, coco_gt) if coco_gt else (None, []))
+        if coco_metrics:
+            metrics.mAP_50 = coco_metrics.mAP_50
+            metrics.mAP_50_95 = coco_metrics.mAP_50_95
+            metrics.mAP_75 = coco_metrics.mAP_75
+            metrics.per_class_ap = coco_metrics.per_class_ap
 
     return ModelEvaluation(
         model_name=model_name,
@@ -884,15 +1075,14 @@ def load_model(
 ) -> nn.Module:
     """Load model based on type."""
     if model_type == "faster_rcnn":
-        from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
-        model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
-        # Modify for num_classes (Faster R-CNN uses 91 COCO classes by default)
+        from models.faster_rcnn.model import build_faster_rcnn
+        model = build_faster_rcnn(num_classes=num_classes + 1, pretrained=False)
     elif model_type == "yolo":
-        from models.yolo import build_yolo
-        model = build_yolo(num_classes=num_classes)
+        from models.yolo.model import build_yolo
+        model = build_yolo(num_classes=num_classes, pretrained_backbone=False)
     elif model_type == "detr":
-        from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
-        model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
+        from models.detr.model import build_detr
+        model = build_detr(num_classes=num_classes, pretrained_coco=True)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 

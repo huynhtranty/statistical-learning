@@ -37,17 +37,29 @@ class FasterRCNNLoss(nn.Module):
 # YOLO Loss
 # ---------------------------------------------------------------------------
 
+# Anchor priors (normalized 0..1, w h) cho 3 scale × 3 anchor.
+# Lấy cảm hứng từ YOLOv5 anchors (pixel @ 640) chia cho 640:
+#   P3/8:  10,13   16,30   33,23
+#   P4/16: 30,61   62,45   59,119
+#   P5/32: 116,90  156,198 373,326
+DEFAULT_YOLO_ANCHORS: list[list[tuple[float, float]]] = [
+    [(0.0156, 0.0203), (0.0250, 0.0469), (0.0516, 0.0359)],   # P3 (small)
+    [(0.0469, 0.0953), (0.0969, 0.0703), (0.0922, 0.1859)],   # P4 (medium)
+    [(0.1813, 0.1406), (0.2438, 0.3094), (0.5828, 0.5094)],   # P5 (large)
+]
+
+
 class YOLOLoss(nn.Module):
-    """Loss cho kiến trúc YOLO-style.
+    """Loss cho kiến trúc YOLO-style với anchor-aware matching.
 
     Cải tiến so với baseline:
+    - Anchor priors per scale × per anchor: mỗi GT chỉ assigned cho 1 anchor
+      có shape IoU lớn nhất (top-1) → 3 anchors phân hoá tốt, không collapse.
     - Center-region assignment (YOLOv5 style): mỗi GT gán cho 1-3 cell (center +
-      neighbor cùng nửa cell) → tăng số positive samples 1.5-3x → gradient mạnh hơn.
-    - YOLOv5 xy parameterization: pred_xy = 2*sigmoid(tx) - 0.5, range [-0.5, 1.5]
-      cho phép neighbor cells dự đoán center của GT (offset có thể âm/lớn hơn 1).
-    - Focal Loss cho objectness (giảm dominance của vô vàn negative cells).
-    - Focal Loss cho classification (cân bằng 1-vs-N imbalance per cell).
-    - Scale-aware assignment dựa trên max-side của box.
+      neighbor cùng nửa cell) → tăng số positive samples 1.5-3x.
+    - YOLOv5 xy parameterization: pred_xy = 2*sigmoid(tx) - 0.5, range [-0.5, 1.5].
+    - YOLOv5 wh parameterization: pred_wh = (2*sigmoid(t))^2, fraction of image.
+    - Focal Loss cho objectness (giảm dominance của negative cells).
     - Box loss = (1 - GIoU) + L1 trên (cx, cy, w, h) chuẩn hoá.
     """
 
@@ -56,6 +68,7 @@ class YOLOLoss(nn.Module):
         num_classes: int,
         num_anchors: int = 3,
         image_size: int = 640,
+        anchors: list[list[tuple[float, float]]] | None = None,
         lambda_noobj: float = 1.0,
         lambda_obj: float = 1.0,
         lambda_cls: float = 1.0,
@@ -74,6 +87,17 @@ class YOLOLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
 
+        anchors = anchors or DEFAULT_YOLO_ANCHORS
+        if any(len(scale_anchors) != num_anchors for scale_anchors in anchors):
+            raise ValueError(
+                f"Mỗi scale phải có đúng {num_anchors} anchors, "
+                f"got: {[len(a) for a in anchors]}"
+            )
+        self.num_scales = len(anchors)
+        # Stack thành 1 tensor (num_scales, num_anchors, 2) để vectorise.
+        anchors_tensor = torch.tensor(anchors, dtype=torch.float32)  # (S, A, 2)
+        self.register_buffer("anchors", anchors_tensor)
+
         self.bce_obj = nn.BCEWithLogitsLoss(reduction="none")
         self.bce_cls = nn.BCEWithLogitsLoss(reduction="none")
 
@@ -85,23 +109,43 @@ class YOLOLoss(nn.Module):
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         return alpha_t * (1 - p_t).pow(gamma)
 
-    def _assign_scale_for_box(self, bw_norm: Tensor, bh_norm: Tensor, num_scales: int) -> Tensor:
-        """Heuristic gán mỗi GT vào 1 scale dựa trên kích thước lớn nhất của box.
-        Convention: predictions[0] = P3 (stride 8, lưới to), [-1] = P5 (stride 32, lưới nhỏ).
-        - max_side < 0.15 → P3 (object nhỏ, cần lưới chi tiết để localize).
-        - 0.15 ≤ max_side < 0.45 → P4 (object vừa, ~mode của dataset này).
-        - max_side ≥ 0.45 → P5 (object to phủ phần lớn ảnh).
+    @staticmethod
+    def _shape_iou(box_wh: Tensor, anchor_wh: Tensor) -> Tensor:
+        """Shape IoU centered at origin giữa GT boxes và anchor priors.
 
-        Dùng max_side thay vì area để chống lệch đối với box dạng "thanh dài"
-        (ví dụ giraffe — chiều cao lớn nhưng chiều rộng nhỏ).
+        Args:
+            box_wh: (N, 2) tensor (w, h) normalized [0, 1].
+            anchor_wh: (M, 2) tensor (w, h) normalized [0, 1].
+
+        Returns:
+            (N, M) shape IoU. Đo độ tương thích về kích thước/aspect — center bằng 0.
         """
-        max_side = torch.maximum(bw_norm, bh_norm)
-        scale_idx = torch.where(
-            max_side < 0.15, torch.zeros_like(max_side, dtype=torch.long),
-            torch.where(max_side < 0.45, torch.ones_like(max_side, dtype=torch.long),
-                        torch.full_like(max_side, num_scales - 1, dtype=torch.long))
-        )
-        return scale_idx.clamp(0, num_scales - 1)
+        inter_w = torch.minimum(box_wh[:, None, 0], anchor_wh[None, :, 0])
+        inter_h = torch.minimum(box_wh[:, None, 1], anchor_wh[None, :, 1])
+        inter = inter_w * inter_h
+        area_box = (box_wh[:, 0] * box_wh[:, 1]).unsqueeze(1)  # (N, 1)
+        area_anc = (anchor_wh[:, 0] * anchor_wh[:, 1]).unsqueeze(0)  # (1, M)
+        return inter / (area_box + area_anc - inter + 1e-9)
+
+    def _match_gt_to_anchors(
+        self, box_wh: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Cho mỗi GT, chọn (scale_idx, anchor_idx) có shape IoU cao nhất.
+
+        Args:
+            box_wh: (N, 2) tensor (w_norm, h_norm).
+
+        Returns:
+            (scale_idx, anchor_idx) — mỗi cái là (N,) long tensor.
+        """
+        # anchors: (S, A, 2) → flatten sang (S*A, 2). Đảm bảo cùng device với input
+        # vì YOLOLoss có thể không được .to(device) (chỉ model được move).
+        all_anchors = self.anchors.view(-1, 2).to(box_wh.device)  # (S*A, 2)
+        ious = self._shape_iou(box_wh, all_anchors)  # (N, S*A)
+        best = ious.argmax(dim=1)  # (N,)
+        scale_idx = best // self.num_anchors
+        anchor_idx = best % self.num_anchors
+        return scale_idx, anchor_idx
 
     def forward(
         self,
@@ -114,24 +158,33 @@ class YOLOLoss(nn.Module):
         num_scales = len(predictions)
         img_size = self.image_size
 
+        if num_scales != self.num_scales:
+            raise ValueError(
+                f"predictions có {num_scales} scale nhưng anchors chỉ định "
+                f"{self.num_scales} scale."
+            )
+
         obj_loss = torch.zeros((), device=device)
         cls_loss = torch.zeros((), device=device)
         box_loss = torch.zeros((), device=device)
         total_pos = 0
 
-        # Pre-compute scale assignment cho từng GT box mỗi batch image
-        per_image_assignments: list[Tensor] = []
+        # Pre-compute matched (scale_idx, anchor_idx) cho từng GT mỗi batch image.
+        per_image_scale: list[Tensor] = []
+        per_image_anchor: list[Tensor] = []
         for b in range(batch_size):
             boxes = target_boxes[b]
             if boxes.numel() == 0:
-                per_image_assignments.append(torch.empty(0, dtype=torch.long, device=device))
+                per_image_scale.append(torch.empty(0, dtype=torch.long, device=device))
+                per_image_anchor.append(torch.empty(0, dtype=torch.long, device=device))
                 continue
             boxes = boxes.to(device)
             bw_norm = ((boxes[:, 2] - boxes[:, 0]) / img_size).clamp(1e-6, 1.0)
             bh_norm = ((boxes[:, 3] - boxes[:, 1]) / img_size).clamp(1e-6, 1.0)
-            per_image_assignments.append(
-                self._assign_scale_for_box(bw_norm, bh_norm, num_scales)
-            )
+            box_wh = torch.stack([bw_norm, bh_norm], dim=1)  # (N, 2)
+            scale_idx, anchor_idx = self._match_gt_to_anchors(box_wh)
+            per_image_scale.append(scale_idx)
+            per_image_anchor.append(anchor_idx)
 
         for scale_idx, pred in enumerate(predictions):
             _, channels, h, w = pred.shape
@@ -157,13 +210,14 @@ class YOLOLoss(nn.Module):
                 boxes = boxes.to(device)
                 labels = labels.to(device)
 
-                # Lọc các GT thuộc về scale hiện tại
-                scale_mask = per_image_assignments[b] == scale_idx
+                # Lọc GT có scale match = scale hiện tại
+                scale_mask = per_image_scale[b] == scale_idx
                 if scale_mask.sum() == 0:
                     continue
 
                 boxes_s = boxes[scale_mask]
                 labels_s = labels[scale_mask]
+                anchor_idx_s = per_image_anchor[b][scale_mask]  # (N_s,)
 
                 cx = ((boxes_s[:, 0] + boxes_s[:, 2]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
                 cy = ((boxes_s[:, 1] + boxes_s[:, 3]) * 0.5 / img_size).clamp(0.0, 1.0 - 1e-6)
@@ -179,32 +233,23 @@ class YOLOLoss(nn.Module):
                 bw = bw[valid]
                 bh = bh[valid]
                 labels_v = labels_s[valid]
+                anchor_idx_v = anchor_idx_s[valid]  # (N_v,) — anchor index của từng GT
 
                 # ========= Center-region assignment (YOLOv5 style) =========
-                # Mỗi GT gán cho:
-                # - Center cell (luôn).
-                # - Cell trái (gi-1) NẾU GT center ở nửa trái của cell (gx % 1 < 0.5).
-                # - Cell phải (gi+1) NẾU ở nửa phải.
-                # - Tương tự cho cell trên/dưới.
-                # → 1-3 positive cells / GT thay vì 1.
+                # Mỗi GT gán cho 1-3 cell tại anchor đã matched.
                 gx = cx * w  # GT center theo đơn vị cell
                 gy = cy * h
                 gi_c = torch.floor(gx).long().clamp(0, w - 1)
                 gj_c = torch.floor(gy).long().clamp(0, h - 1)
 
-                # Offset trong cell (0..1)
                 gx_frac = gx - gi_c.float()
                 gy_frac = gy - gj_c.float()
 
-                # 5 ứng viên: center + 4 neighbors. Mỗi cell sẽ được giữ
-                # nếu thoả điều kiện directional + nằm trong ảnh.
-                # offsets: (di, dj). di âm = cell trái.
                 cand_offsets = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
 
                 all_gi: list[Tensor] = []
                 all_gj: list[Tensor] = []
-                all_tx_target: list[Tensor] = []  # offset từ cell tới GT center (xy decoded space)
-                all_ty_target: list[Tensor] = []
+                all_anchor: list[Tensor] = []
                 all_bw: list[Tensor] = []
                 all_bh: list[Tensor] = []
                 all_cx: list[Tensor] = []
@@ -215,7 +260,7 @@ class YOLOLoss(nn.Module):
                     if di == 0 and dj == 0:
                         keep = torch.ones_like(gx_frac, dtype=torch.bool)
                     elif di == -1:
-                        keep = gx_frac < 0.5  # nửa trái → dùng cell trái
+                        keep = gx_frac < 0.5
                     elif di == 1:
                         keep = gx_frac >= 0.5
                     elif dj == -1:
@@ -230,7 +275,6 @@ class YOLOLoss(nn.Module):
 
                     ngi = (gi_c + di).clamp(0, w - 1)
                     ngj = (gj_c + dj).clamp(0, h - 1)
-                    # Loại bỏ trùng do clamp (chạm biên ảnh)
                     in_bounds = ((gi_c[keep] + di) >= 0) & ((gi_c[keep] + di) < w) & \
                                 ((gj_c[keep] + dj) >= 0) & ((gj_c[keep] + dj) < h)
                     keep_idx = torch.where(keep)[0][in_bounds]
@@ -239,11 +283,7 @@ class YOLOLoss(nn.Module):
 
                     all_gi.append(ngi[keep_idx])
                     all_gj.append(ngj[keep_idx])
-                    # tx_target ở YOLOv5 decoded space [-0.5, 1.5]:
-                    # gx_frac + (di=-1) cho neighbor trái → offset = gx_frac+1, etc.
-                    # Tổng quát: tx_target = gx - new_gi
-                    all_tx_target.append(gx[keep_idx] - ngi[keep_idx].float())
-                    all_ty_target.append(gy[keep_idx] - ngj[keep_idx].float())
+                    all_anchor.append(anchor_idx_v[keep_idx])
                     all_bw.append(bw[keep_idx])
                     all_bh.append(bh[keep_idx])
                     all_cx.append(cx[keep_idx])
@@ -255,53 +295,55 @@ class YOLOLoss(nn.Module):
 
                 p_gi = torch.cat(all_gi)
                 p_gj = torch.cat(all_gj)
-                p_tx_tgt = torch.cat(all_tx_target)  # range [-0.5, 1.5] sau YOLOv5 expansion
-                p_ty_tgt = torch.cat(all_ty_target)
+                p_anchor = torch.cat(all_anchor)
                 p_bw = torch.cat(all_bw)
                 p_bh = torch.cat(all_bh)
                 p_cx = torch.cat(all_cx)
                 p_cy = torch.cat(all_cy)
                 p_labels = torch.cat(all_labels)
 
-                # ========= Gán positive cho tất cả anchors tại các cell =========
+                # ========= Gán positive CHỈ tại anchor đã matched =========
                 cell_size_x = 1.0 / float(w)
                 cell_size_y = 1.0 / float(h)
 
-                for a in range(self.num_anchors):
-                    obj_target[b, a, p_gj, p_gi] = 1.0
-                    pos_mask[b, a, p_gj, p_gi] = True
-                    cls_target[b, a, p_labels, p_gj, p_gi] = 1.0
+                # Vì advanced indexing với cùng cell (b, a, gj, gi) có thể trùng
+                # giữa các GT, chỉ giữ unique key để tránh ghi đè im lặng.
+                # Trùng key thường hiếm (chỉ khi 2 GT đè nhau hoàn toàn).
+                obj_target[b, p_anchor, p_gj, p_gi] = 1.0
+                pos_mask[b, p_anchor, p_gj, p_gi] = True
+                cls_target[b, p_anchor, p_labels, p_gj, p_gi] = 1.0
 
-                    pred_xywh = pred_boxes[b, a, :, p_gj, p_gi].transpose(0, 1)
-                    # YOLOv5 xy: 2*sigmoid(t) - 0.5 → range [-0.5, 1.5]
-                    pred_xy = 2.0 * pred_xywh[:, :2].sigmoid() - 0.5
-                    # YOLOv5 wh: (2*sigmoid(t))^2 → range [0, 4]
-                    pred_wh = (2.0 * pred_xywh[:, 2:].sigmoid()).pow(2)
+                # Compute box prediction tại (anchor, gj, gi)
+                # pred_boxes shape: (B, A, 4, H, W) → lấy (B, anchor, :, gj, gi)
+                pred_xywh = pred_boxes[b, p_anchor, :, p_gj, p_gi]  # (N, 4)
 
-                    pcx = (p_gi.float() + pred_xy[:, 0]) * cell_size_x
-                    pcy = (p_gj.float() + pred_xy[:, 1]) * cell_size_y
-                    pw = pred_wh[:, 0].clamp(min=1e-6, max=4.0)
-                    ph = pred_wh[:, 1].clamp(min=1e-6, max=4.0)
+                # YOLOv5 parameterization
+                pred_xy = 2.0 * pred_xywh[:, :2].sigmoid() - 0.5
+                pred_wh = (2.0 * pred_xywh[:, 2:].sigmoid()).pow(2)
 
-                    pred_xyxy = torch.stack(
-                        (pcx - pw / 2, pcy - ph / 2, pcx + pw / 2, pcy + ph / 2),
-                        dim=1,
-                    )
-                    tgt_xyxy = torch.stack(
-                        (p_cx - p_bw / 2, p_cy - p_bh / 2,
-                         p_cx + p_bw / 2, p_cy + p_bh / 2),
-                        dim=1,
-                    )
-                    giou = generalized_box_iou(pred_xyxy, tgt_xyxy)
-                    giou_diag = giou.diagonal()
+                pcx = (p_gi.float() + pred_xy[:, 0]) * cell_size_x
+                pcy = (p_gj.float() + pred_xy[:, 1]) * cell_size_y
+                pw = pred_wh[:, 0].clamp(min=1e-6, max=4.0)
+                ph = pred_wh[:, 1].clamp(min=1e-6, max=4.0)
 
-                    pred_cxcywh = torch.stack((pcx, pcy, pw, ph), dim=1)
-                    tgt_cxcywh = torch.stack((p_cx, p_cy, p_bw, p_bh), dim=1)
-                    l1_per_box = (pred_cxcywh - tgt_cxcywh).abs().sum(dim=1)
+                pred_xyxy = torch.stack(
+                    (pcx - pw / 2, pcy - ph / 2, pcx + pw / 2, pcy + ph / 2),
+                    dim=1,
+                )
+                tgt_xyxy = torch.stack(
+                    (p_cx - p_bw / 2, p_cy - p_bh / 2,
+                     p_cx + p_bw / 2, p_cy + p_bh / 2),
+                    dim=1,
+                )
+                giou = generalized_box_iou(pred_xyxy, tgt_xyxy)
+                giou_diag = giou.diagonal()
 
-                    box_loss = box_loss + (1.0 - giou_diag).sum() + l1_per_box.sum()
+                pred_cxcywh = torch.stack((pcx, pcy, pw, ph), dim=1)
+                tgt_cxcywh = torch.stack((p_cx, p_cy, p_bw, p_bh), dim=1)
+                l1_per_box = (pred_cxcywh - tgt_cxcywh).abs().sum(dim=1)
 
-                total_pos += int(p_gi.numel()) * self.num_anchors
+                box_loss = box_loss + (1.0 - giou_diag).sum() + l1_per_box.sum()
+                total_pos += int(p_gi.numel())
 
             # ---- Objectness loss với Focal weighting ----
             obj_bce = self.bce_obj(pred_obj, obj_target)
@@ -320,8 +362,9 @@ class YOLOLoss(nn.Module):
                 obj_pos = torch.zeros((), device=device)
 
             if neg_count > 0:
-                # Chia cho pos_count để negatives được scale theo số positives (focal-loss convention).
-                obj_neg = obj_elementwise[neg_mask].sum() / max(pos_count, 1)
+                # Chia cho neg_count để obj_neg là trung bình per-element thực sự,
+                # tránh blow-up khi ảnh ít object (pos_count nhỏ vs neg_count lớn).
+                obj_neg = obj_elementwise[neg_mask].sum() / max(neg_count, 1)
             else:
                 obj_neg = torch.zeros((), device=device)
 

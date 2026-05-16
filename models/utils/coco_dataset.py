@@ -32,8 +32,11 @@ DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
 DEFAULT_ANNOT_DIR = DEFAULT_DATA_ROOT / "annotations"
 DEFAULT_IMAGES_DIR = DEFAULT_DATA_ROOT / "images"
 
-# Classes của dataset (6 animal classes)
-DEFAULT_CLASSES = ["cat", "dog", "horse", "cow", "bird", "sheep"]
+# Classes của dataset (10 animal classes — khớp data/annotations/classes.txt)
+DEFAULT_CLASSES = [
+    "cat", "dog", "horse", "cow", "bird",
+    "sheep", "elephant", "bear", "zebra", "giraffe",
+]
 CLASS_TO_IDX = {cls: i for i, cls in enumerate(DEFAULT_CLASSES)}
 
 

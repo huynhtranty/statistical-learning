@@ -476,6 +476,26 @@ def load_gt_annotations(ann_file: Path) -> dict:
         return json.load(f)
 
 
+def _build_cat_id_to_cls_idx(
+    ann_data: dict, class_names: list[str]
+) -> dict[int, int]:
+    """Map category_id (COCO, có thể không liền mạch) → 0-based class index theo class_names.
+
+    Ưu tiên ghép qua TÊN category — robust với mọi COCO scheme (1-based, 0-based,
+    hoặc giữ ID 17/18/.. như COCO 2017).
+    """
+    name_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    mapping: dict[int, int] = {}
+    for cat in ann_data.get("categories", []):
+        cat_id = cat.get("id")
+        name = cat.get("name")
+        if cat_id is None or name is None:
+            continue
+        if name in name_to_idx:
+            mapping[int(cat_id)] = name_to_idx[name]
+    return mapping
+
+
 def get_gt_for_image(
     ann_data: dict,
     image_file_name: str,
@@ -491,14 +511,16 @@ def get_gt_for_image(
     if img_id is None:
         return [], []
 
-    # Map category_id -> class index (category_id in COCO starts at 1)
+    # Map category_id → 0-based class index qua tên (xem _build_cat_id_to_cls_idx).
+    cat_id_to_cls_idx = _build_cat_id_to_cls_idx(ann_data, class_names)
+
     boxes, labels = [], []
     for ann in ann_data["annotations"]:
         if ann["image_id"] != img_id:
             continue
-        cat_id = ann["category_id"]  # 1-based
-        cls_idx = cat_id - 1          # 0-based index
-        if cls_idx < 0 or cls_idx >= len(class_names):
+        cat_id = int(ann["category_id"])
+        cls_idx = cat_id_to_cls_idx.get(cat_id)
+        if cls_idx is None or cls_idx < 0 or cls_idx >= len(class_names):
             continue
         x, y, w, h = ann["bbox"]
         boxes.append([float(x), float(y), float(w), float(h)])

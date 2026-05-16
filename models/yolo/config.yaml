@@ -3,7 +3,7 @@
 model:
   model_name: yolo_custom
   num_classes: 10           # Số lớp vật thể: cat, dog, horse, cow, bird, sheep, elephant, bear, zebra, giraffe
-  image_size: 320           # Kích thước ảnh input (320, 416, 512, 640, 768, 1024)
+  image_size: 640           # Kích thước ảnh input (320, 416, 512, 640, 768, 1024)
   base_channels: 32         # Số kênh cơ sở (tăng để có model lớn hơn)
   num_anchors: 3            # Số anchor mỗi vị trí grid
   classes: ["cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
@@ -12,7 +12,7 @@ training:
   epochs: 50
   batch_size: 8
   num_workers: 4
-  lr: 0.001                 # Learning rate
+  lr: 0.01                 # Learning rate
   weight_decay: 0.0001      # Weight decay cho optimizer
 
 inference:
