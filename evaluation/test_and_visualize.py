@@ -200,9 +200,12 @@ def preprocess_image_pil(image_path: Path, input_size: int = 640) -> tuple:
 
 def _nms(boxes: list, scores: list, labels: list,
           iou_threshold: float = 0.45) -> tuple[list, list, list]:
-    """Simple per-class NMS."""
+    """Per-class NMS using torchvision for speed."""
     if not boxes:
         return [], [], []
+
+    import torch
+    import torchvision.ops
 
     # Group by class
     from collections import defaultdict
@@ -212,19 +215,26 @@ def _nms(boxes: list, scores: list, labels: list,
 
     nms_boxes, nms_scores, nms_labels = [], [], []
     for cls_id, items in by_class.items():
-        # Sort by score
-        items = sorted(items, key=lambda x: x[1], reverse=True)
-        keep = []
-        while items:
-            best = items.pop(0)
-            keep.append(best)
-            items = [
-                (b, s) for b, s in items
-                if _box_iou(best[0], b) < iou_threshold
-            ]
-        for b, s in keep:
-            nms_boxes.append(b)
-            nms_scores.append(s)
+        if not items:
+            continue
+
+        # Convert to tensor for NMS
+        boxes_arr = torch.tensor([item[0] for item in items])  # (N, 4) xywh
+        scores_arr = torch.tensor([item[1] for item in items])
+
+        # Convert xywh to xyxy for NMS
+        xyxy = torch.zeros_like(boxes_arr)
+        xyxy[:, 0] = boxes_arr[:, 0]  # x1
+        xyxy[:, 1] = boxes_arr[:, 1]  # y1
+        xyxy[:, 2] = boxes_arr[:, 0] + boxes_arr[:, 2]  # x2
+        xyxy[:, 3] = boxes_arr[:, 1] + boxes_arr[:, 3]  # y2
+
+        # Run NMS
+        keep = torchvision.ops.nms(xyxy, scores_arr, iou_threshold)
+
+        for idx in keep.tolist():
+            nms_boxes.append(items[idx][0])
+            nms_scores.append(items[idx][1])
             nms_labels.append(cls_id)
 
     return nms_boxes, nms_scores, nms_labels
@@ -476,6 +486,22 @@ def load_gt_annotations(ann_file: Path) -> dict:
         return json.load(f)
 
 
+def build_gt_index(ann_data: dict) -> dict:
+    """Pre-build index: image_id -> list of annotations for fast lookup."""
+    index = {}
+    for ann in ann_data.get("annotations", []):
+        img_id = ann["image_id"]
+        if img_id not in index:
+            index[img_id] = []
+        index[img_id].append(ann)
+    return index
+
+
+def build_img_name_to_id(ann_data: dict) -> dict:
+    """Pre-build index: file_name -> image_id."""
+    return {img["file_name"]: img["id"] for img in ann_data.get("images", [])}
+
+
 def _build_cat_id_to_cls_idx(
     ann_data: dict, class_names: list[str]
 ) -> dict[int, int]:
@@ -500,26 +526,38 @@ def get_gt_for_image(
     ann_data: dict,
     image_file_name: str,
     class_names: list[str],
+    img_name_to_id: dict | None = None,
+    gt_index: dict | None = None,
+    cat_mapping: dict | None = None,
 ) -> tuple[list, list]:
-    """Extract GT boxes/labels for a given image file name."""
-    # Find image id
-    img_id = None
-    for img in ann_data["images"]:
-        if img["file_name"] == image_file_name:
-            img_id = img["id"]
-            break
-    if img_id is None:
-        return [], []
+    """Extract GT boxes/labels for a given image file name.
 
-    # Map category_id → 0-based class index qua tên (xem _build_cat_id_to_cls_idx).
-    cat_id_to_cls_idx = _build_cat_id_to_cls_idx(ann_data, class_names)
+    Uses pre-built indexes for O(1) lookup instead of O(n) loops.
+    """
+    # Fast lookup using pre-built index
+    if img_name_to_id is not None and gt_index is not None and cat_mapping is not None:
+        img_id = img_name_to_id.get(image_file_name)
+        if img_id is None:
+            return [], []
+        anns = gt_index.get(img_id, [])
+    else:
+        # Fallback: slow lookup
+        img_id = None
+        for img in ann_data.get("images", []):
+            if img["file_name"] == image_file_name:
+                img_id = img["id"]
+                break
+        if img_id is None:
+            return [], []
+        anns = ann_data.get("annotations", [])
+        anns = [a for a in anns if a["image_id"] == img_id]
+        if cat_mapping is None:
+            cat_mapping = _build_cat_id_to_cls_idx(ann_data, class_names)
 
     boxes, labels = [], []
-    for ann in ann_data["annotations"]:
-        if ann["image_id"] != img_id:
-            continue
+    for ann in anns:
         cat_id = int(ann["category_id"])
-        cls_idx = cat_id_to_cls_idx.get(cat_id)
+        cls_idx = (cat_mapping or {}).get(cat_id)
         if cls_idx is None or cls_idx < 0 or cls_idx >= len(class_names):
             continue
         x, y, w, h = ann["bbox"]
@@ -545,9 +583,17 @@ def main():
 
     # Load GT annotations if requested
     gt_data = None
+    gt_index = None
+    img_name_to_id = None
+    cat_mapping = None
     if args.show_gt and args.ann_file:
         print(f"[Info] Loading GT annotations from {args.ann_file}")
         gt_data = load_gt_annotations(Path(args.ann_file))
+        # Pre-build indexes for O(1) lookup
+        gt_index = build_gt_index(gt_data)
+        img_name_to_id = build_img_name_to_id(gt_data)
+        cat_mapping = _build_cat_id_to_cls_idx(gt_data, class_names)
+        print(f"[Info] Built GT index with {len(gt_index)} images")
 
     # Find test images
     image_dir = Path(args.data)
@@ -593,7 +639,8 @@ def main():
         # Draw GT if available
         if gt_data is not None:
             gt_boxes, gt_labels = get_gt_for_image(
-                gt_data, img_path.name, class_names
+                gt_data, img_path.name, class_names,
+                img_name_to_id, gt_index, cat_mapping
             )
             # Draw GT with dashed lines (simulate with thinner boxes, distinct color)
             # We reuse draw_boxes but skip scores and use a "GT" label
