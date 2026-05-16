@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.utils.coco_dataset import get_class_names, DEFAULT_CLASSES
+from models.utils.losses import DEFAULT_YOLO_ANCHORS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,14 +309,17 @@ def _decode_yolo_single_scale(
 
     # Reshape to (A, 5+C, H, W)
     pred = pred.view(num_anchors, 5 + num_classes, H, W)
+    scale_idx = int(round(np.log2(input_size / max(int(H), 1)))) - 3
+    scale_idx = max(0, min(scale_idx, len(DEFAULT_YOLO_ANCHORS) - 1))
+    anchors = torch.tensor(DEFAULT_YOLO_ANCHORS[scale_idx], dtype=pred.dtype, device=pred.device)
 
     # YOLOv5 parameterization:
     #   pred_xy = 2*sigmoid(t) - 0.5  ∈ [-0.5, 1.5]   (offset trong cell, hỗ trợ neighbor)
     #   pred_wh = (2*sigmoid(t))^2    ∈ [0, 4]        (fraction of image normalized)
     tx = 2.0 * pred[:, 0, :, :].sigmoid() - 0.5
     ty = 2.0 * pred[:, 1, :, :].sigmoid() - 0.5
-    tw = (2.0 * pred[:, 2, :, :].sigmoid()).pow(2)
-    th = (2.0 * pred[:, 3, :, :].sigmoid()).pow(2)
+    tw = (2.0 * pred[:, 2, :, :].sigmoid()).pow(2) * anchors[:, 0].view(num_anchors, 1, 1)
+    th = (2.0 * pred[:, 3, :, :].sigmoid()).pow(2) * anchors[:, 1].view(num_anchors, 1, 1)
     obj = pred[:, 4, :, :].sigmoid()
     cls = pred[:, 5:, :, :].sigmoid()  # (A, C, H, W)
 

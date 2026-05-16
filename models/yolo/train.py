@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from models.yolo.model import build_yolo
 from models.utils.coco_dataset import get_coco_dataloaders, get_class_names, CocoDetection, collate_fn
-from models.utils.losses import YOLOLoss
+from models.utils.losses import YOLOLoss, DEFAULT_YOLO_ANCHORS
 from models.utils.box_ops import cxcywh_to_xyxy, box_iou
 
 
@@ -230,6 +230,7 @@ def decode_predictions(
 
     # Strides cho 3 scale (P3, P4, P5) - phải khớp với neck output
     strides = [8, 16, 32]
+    anchors = torch.tensor(DEFAULT_YOLO_ANCHORS, dtype=torch.float32)
     batch_size = predictions[0].shape[0]
 
     for batch_idx in range(batch_size):
@@ -248,6 +249,8 @@ def decode_predictions(
 
             for anchor_idx in range(num_anchors):
                 anchor_pred = pred[anchor_idx]  # (5+C, H, W)
+                anchor_w = float(anchors[scale_idx, anchor_idx, 0])
+                anchor_h = float(anchors[scale_idx, anchor_idx, 1])
 
                 # Tách các thành phần
                 tx = anchor_pred[0]   # (H, W)
@@ -262,8 +265,8 @@ def decode_predictions(
                 # pred_wh = (2*sigmoid(t))^2 ∈ [0, 4]
                 bx = 2 * torch.sigmoid(tx) - 0.5  # (H, W)
                 by = 2 * torch.sigmoid(ty) - 0.5
-                bw = (2 * torch.sigmoid(tw)) ** 2   # (H, W)
-                bh = (2 * torch.sigmoid(th)) ** 2
+                bw = ((2 * torch.sigmoid(tw)) ** 2) * anchor_w   # (H, W)
+                bh = ((2 * torch.sigmoid(th)) ** 2) * anchor_h
 
                 # Grid indices - đảm bảo nằm trên đúng device
                 grid_device = pred.device

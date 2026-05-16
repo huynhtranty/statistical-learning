@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 import numpy as np
+from models.utils.losses import DEFAULT_YOLO_ANCHORS
 
 
 def parse_args():
@@ -165,7 +166,7 @@ def predict_yolo(
     # YOLO head output: list[(B, A*(5+C), H, W)] at multiple scales.
     # Vectorise decode để tránh Python loop O(num_cells) — quan trọng khi conf
     # threshold thấp (e.g. 0.05) sinh ra hàng nghìn detection / ảnh.
-    for out in outputs:
+    for scale_idx, out in enumerate(outputs):
         bsz, ch, h, w = out.shape
         if bsz != 1:
             continue
@@ -179,7 +180,10 @@ def predict_yolo(
         #   pred_wh = (2*sigmoid(t))^2    ∈ [0, 4]
         raw_box = pred[:, :4, :, :].sigmoid()
         box_xy = 2.0 * raw_box[:, :2, :, :] - 0.5
+        anchors = torch.tensor(DEFAULT_YOLO_ANCHORS[scale_idx], dtype=out.dtype, device=out.device)
         box_wh = (2.0 * raw_box[:, 2:, :, :]).pow(2)
+        box_wh[:, 0, :, :] = box_wh[:, 0, :, :] * anchors[:, 0].view(3, 1, 1)
+        box_wh[:, 1, :, :] = box_wh[:, 1, :, :] * anchors[:, 1].view(3, 1, 1)
         stride_x = input_size / float(w)
         stride_y = input_size / float(h)
 

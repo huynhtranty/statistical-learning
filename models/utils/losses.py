@@ -320,11 +320,15 @@ class YOLOLoss(nn.Module):
                 # YOLOv5 parameterization
                 pred_xy = 2.0 * pred_xywh[:, :2].sigmoid() - 0.5
                 pred_wh = (2.0 * pred_xywh[:, 2:].sigmoid()).pow(2)
+                # Anchor-aware width/height theo YOLOv5:
+                # pred_wh_norm = ((2*sigmoid(t))^2) * anchor_wh_norm
+                anchor_wh = self.anchors[scale_idx, p_anchor, :].to(device)
+                pred_wh = pred_wh * anchor_wh
 
                 pcx = (p_gi.float() + pred_xy[:, 0]) * cell_size_x
                 pcy = (p_gj.float() + pred_xy[:, 1]) * cell_size_y
-                pw = pred_wh[:, 0].clamp(min=1e-6, max=4.0)
-                ph = pred_wh[:, 1].clamp(min=1e-6, max=4.0)
+                pw = pred_wh[:, 0].clamp(min=1e-6, max=1.0)
+                ph = pred_wh[:, 1].clamp(min=1e-6, max=1.0)
 
                 pred_xyxy = torch.stack(
                     (pcx - pw / 2, pcy - ph / 2, pcx + pw / 2, pcy + ph / 2),
