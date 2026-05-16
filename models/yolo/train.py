@@ -262,10 +262,11 @@ def decode_predictions(
                 bw = (2 * torch.sigmoid(tw)) ** 2   # (H, W)
                 bh = (2 * torch.sigmoid(th)) ** 2
 
-                # Grid indices
+                # Grid indices - đảm bảo nằm trên đúng device
+                grid_device = pred.device
                 y_grid, x_grid = torch.meshgrid(
-                    torch.arange(h, dtype=torch.float32, device=pred.device),
-                    torch.arange(w, dtype=torch.float32, device=pred.device),
+                    torch.arange(h, dtype=torch.float32, device=grid_device),
+                    torch.arange(w, dtype=torch.float32, device=grid_device),
                     indexing='ij'
                 )
 
@@ -290,12 +291,12 @@ def decode_predictions(
                 if not mask.any():
                     continue
 
-                x1_filtered = x1[mask].cpu().numpy()
-                y1_filtered = y1[mask].cpu().numpy()
-                x2_filtered = x2[mask].cpu().numpy()
-                y2_filtered = y2[mask].cpu().numpy()
-                scores = confidence[mask].cpu().numpy()
-                classes = top_cls[mask].cpu().numpy()
+                x1_filtered = x1[mask].detach().cpu().numpy()
+                y1_filtered = y1[mask].detach().cpu().numpy()
+                x2_filtered = x2[mask].detach().cpu().numpy()
+                y2_filtered = y2[mask].detach().cpu().numpy()
+                scores = confidence[mask].detach().cpu().numpy()
+                classes = top_cls[mask].detach().cpu().numpy()
 
                 for i in range(len(scores)):
                     batch_boxes.append({
@@ -404,33 +405,28 @@ def evaluate_model(
             predictions = decode_predictions(outputs, conf_threshold, num_classes)
 
             for img_idx, img_preds in enumerate(predictions):
-                img_id = batch_idx * dataloader.batch_size + img_idx
+                # Lấy image_id từ target (là tensor [img_id])
+                target = targets[img_idx]
+                img_id_tensor = target.get("image_id", torch.tensor([0]))
+                img_id = img_id_tensor.item() if torch.is_tensor(img_id_tensor) else img_id_tensor
+                if isinstance(img_id, (list, tuple)):
+                    img_id = img_id[0]
 
                 # Apply NMS
                 img_preds = nms(img_preds, iou_threshold)
 
-                # Lấy ground truths cho ảnh này từ target
-                img_gt_boxes = []
-                img_gt_labels = []
-                for target in targets:
-                    if target.get("image_id", 0) == img_id:
-                        img_gt_boxes.extend(target.get("boxes", []).cpu().tolist())
-                        img_gt_labels.extend(target.get("labels", []).cpu().tolist())
-                        break
+                # Lấy ground truths cho ảnh này
+                img_gt_boxes = target.get("boxes", torch.tensor([]))
+                img_gt_labels = target.get("labels", torch.tensor([]))
 
-                # Nếu target không có image_id, dùng index trong batch
-                if not img_gt_boxes and img_idx < len(targets):
-                    target = targets[img_idx]
-                    img_gt_boxes = target.get("boxes", torch.tensor([])).cpu().tolist()
-                    img_gt_labels = target.get("labels", torch.tensor([])).cpu().tolist()
-                    if isinstance(img_gt_boxes, torch.Tensor):
-                        img_gt_boxes = img_gt_boxes.tolist()
-                    if isinstance(img_gt_labels, torch.Tensor):
-                        img_gt_labels = img_gt_labels.tolist()
-                    if not isinstance(img_gt_boxes, list):
-                        img_gt_boxes = []
-                    if not isinstance(img_gt_labels, list):
-                        img_gt_labels = []
+                if isinstance(img_gt_boxes, torch.Tensor):
+                    img_gt_boxes = img_gt_boxes.cpu().tolist()
+                if isinstance(img_gt_labels, torch.Tensor):
+                    img_gt_labels = img_gt_labels.cpu().tolist()
+                if not isinstance(img_gt_boxes, list):
+                    img_gt_boxes = []
+                if not isinstance(img_gt_labels, list):
+                    img_gt_labels = []
 
                 # Đếm GTs theo class
                 for label in img_gt_labels:
@@ -444,36 +440,36 @@ def evaluate_model(
                     cls_id = pred["class"]
                     if 0 <= cls_id < num_classes:
                         pred_box = pred["bbox"]
-                        
+
                         # Tìm GT cùng class có IoU cao nhất
                         best_iou = 0.0
                         matched = False
-                        
+
                         for gt_idx, (gt_box, gt_label) in enumerate(zip(img_gt_boxes, img_gt_labels)):
                             if isinstance(gt_label, torch.Tensor):
                                 gt_label = gt_label.item()
                             if gt_label != cls_id:
                                 continue
-                            
+
                             # Tính IoU
                             x1 = max(pred_box[0], gt_box[0])
                             y1 = max(pred_box[1], gt_box[1])
                             x2 = min(pred_box[2], gt_box[2])
                             y2 = min(pred_box[3], gt_box[3])
-                            
+
                             inter_w = max(0, x2 - x1)
                             inter_h = max(0, y2 - y1)
                             inter_area = inter_w * inter_h
-                            
+
                             pred_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
                             gt_area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
                             union_area = pred_area + gt_area - inter_area
-                            
+
                             iou = inter_area / (union_area + 1e-10)
-                            
+
                             if iou > best_iou:
                                 best_iou = iou
-                        
+
                         is_tp = best_iou >= iou_threshold
                         class_preds[cls_id].append((pred["score"], is_tp))
 
