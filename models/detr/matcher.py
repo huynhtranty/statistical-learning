@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from scipy.optimize import linear_sum_assignment
+import numpy as np
 
 import sys
 from pathlib import Path
@@ -96,12 +97,18 @@ class HungarianMatcher(nn.Module):
             cxcywh_to_xyxy(tgt_boxes),
         )
 
+        # Sanitize GIoU values: clamp to valid range [-1, 1] to prevent numerical issues
+        cost_giou = torch.clamp(cost_giou, min=-1.0, max=1.0)
+
         # Tổng hợp cost matrix
         cost_matrix = (
             self.cost_class * cost_class
             + self.cost_bbox * cost_bbox
             + self.cost_giou * cost_giou
         )
+
+        # Replace NaN/Inf with large finite values early to prevent propagation
+        cost_matrix = torch.nan_to_num(cost_matrix, nan=1e6, posinf=1e6, neginf=-1e6)
 
         # Reshape lại theo batch
         cost_matrix = cost_matrix.view(batch_size, num_queries, -1).cpu()
@@ -121,9 +128,15 @@ class HungarianMatcher(nn.Module):
                 continue
 
             # Replace NaN/Inf with large finite values to prevent Hungarian solver crash
-            c_i = torch.where(torch.isfinite(c_i), c_i, torch.full_like(c_i, 1e6))
+            c_i = torch.nan_to_num(c_i, nan=1e6, posinf=1e6, neginf=-1e6)
 
-            pred_idx, tgt_idx = linear_sum_assignment(c_i.numpy())
+            # Final validation: ensure matrix contains only valid finite values
+            c_i_np = c_i.cpu().numpy()
+            if not np.isfinite(c_i_np).all():
+                invalid_mask = ~np.isfinite(c_i_np)
+                c_i_np[invalid_mask] = 1e6
+
+            pred_idx, tgt_idx = linear_sum_assignment(c_i_np)
             indices.append((
                 torch.as_tensor(pred_idx, dtype=torch.long),
                 torch.as_tensor(tgt_idx, dtype=torch.long),
