@@ -206,6 +206,165 @@ def compute_ap(recall: np.ndarray, precision: np.ndarray) -> float:
     return ap
 
 
+def decode_predictions(
+    predictions: list[torch.Tensor],
+    conf_threshold: float = 0.25,
+    num_classes: int = 5,
+) -> list[list[dict]]:
+    """Decode YOLO predictions thành list of boxes.
+
+    Args:
+        predictions: List of 3 tensors từ YOLO model output.
+            Mỗi tensor shape: (batch, num_anchors * (5 + num_classes), H, W)
+        conf_threshold: Confidence threshold để lọc predictions
+        num_classes: Số lượng classes
+
+    Returns:
+        List of lists, outer list = batch, inner list = predictions
+        mỗi prediction: {"bbox": [x1, y1, x2, y2], "score": float, "class": int}
+    """
+    all_batch_predictions: list[list[dict]] = []
+
+    # Strides cho 3 scale (P3, P4, P5) - phải khớp với neck output
+    strides = [8, 16, 32]
+    batch_size = predictions[0].shape[0]
+
+    for batch_idx in range(batch_size):
+        batch_boxes: list[dict] = []
+
+        for scale_idx, pred in enumerate(predictions):
+            _, _, h, w = pred.shape
+            stride = strides[scale_idx]
+
+            # Reshape: (B, anchors * (5+C), H, W) -> (B, anchors, 5+C, H, W)
+            num_anchors = 3
+            pred = pred.view(batch_size, num_anchors, 5 + num_classes, h, w)
+
+            # Lấy prediction cho batch hiện tại
+            pred = pred[batch_idx]  # (anchors, 5+C, H, W)
+
+            for anchor_idx in range(num_anchors):
+                anchor_pred = pred[anchor_idx]  # (5+C, H, W)
+
+                # Tách các thành phần
+                tx = anchor_pred[0]   # (H, W)
+                ty = anchor_pred[1]
+                tw = anchor_pred[2]
+                th = anchor_pred[3]
+                obj = torch.sigmoid(anchor_pred[4])  # (H, W)
+                cls = torch.softmax(anchor_pred[5:5+num_classes], dim=0)  # (C, H, W)
+
+                # YOLOv5 decode: bbox coordinates trong feature map
+                # pred_xy = 2*sigmoid(tx) - 0.5 ∈ [-0.5, 1.5]
+                # pred_wh = (2*sigmoid(t))^2 ∈ [0, 4]
+                bx = 2 * torch.sigmoid(tx) - 0.5  # (H, W)
+                by = 2 * torch.sigmoid(ty) - 0.5
+                bw = (2 * torch.sigmoid(tw)) ** 2   # (H, W)
+                bh = (2 * torch.sigmoid(th)) ** 2
+
+                # Grid indices
+                y_grid, x_grid = torch.meshgrid(
+                    torch.arange(h, dtype=torch.float32, device=pred.device),
+                    torch.arange(w, dtype=torch.float32, device=pred.device),
+                    indexing='ij'
+                )
+
+                # Absolute coordinates trong feature map
+                gx = (x_grid + bx) * stride
+                gy = (y_grid + by) * stride
+                gw = bw * stride
+                gh = bh * stride
+
+                # Convert xywh -> xyxy (top-left, bottom-right)
+                x1 = gx - gw / 2
+                y1 = gy - gh / 2
+                x2 = gx + gw / 2
+                y2 = gy + gh / 2
+
+                # Tính confidence = objectness * max_class_prob
+                max_cls_prob, top_cls = cls.max(dim=0)  # (H, W)
+                confidence = obj * max_cls_prob  # (H, W)
+
+                # Lọc theo confidence threshold
+                mask = confidence > conf_threshold
+                if not mask.any():
+                    continue
+
+                x1_filtered = x1[mask].cpu().numpy()
+                y1_filtered = y1[mask].cpu().numpy()
+                x2_filtered = x2[mask].cpu().numpy()
+                y2_filtered = y2[mask].cpu().numpy()
+                scores = confidence[mask].cpu().numpy()
+                classes = top_cls[mask].cpu().numpy()
+
+                for i in range(len(scores)):
+                    batch_boxes.append({
+                        "bbox": [float(x1_filtered[i]), float(y1_filtered[i]),
+                                 float(x2_filtered[i]), float(y2_filtered[i])],
+                        "score": float(scores[i]),
+                        "class": int(classes[i]),
+                    })
+
+        all_batch_predictions.append(batch_boxes)
+
+    return all_batch_predictions
+
+
+def nms_single_class(boxes: list[dict], iou_threshold: float = 0.45) -> list[dict]:
+    """Apply NMS cho predictions cùng một class."""
+    if len(boxes) == 0:
+        return []
+
+    # Sort by score descending
+    boxes = sorted(boxes, key=lambda x: x["score"], reverse=True)
+
+    keep = []
+    while boxes:
+        best = boxes.pop(0)
+        keep.append(best)
+
+        remaining = []
+        for box in boxes:
+            # Tính IoU
+            x1 = max(best["bbox"][0], box["bbox"][0])
+            y1 = max(best["bbox"][1], box["bbox"][1])
+            x2 = min(best["bbox"][2], box["bbox"][2])
+            y2 = min(best["bbox"][3], box["bbox"][3])
+
+            inter_w = max(0, x2 - x1)
+            inter_h = max(0, y2 - y1)
+            inter_area = inter_w * inter_h
+
+            best_area = (best["bbox"][2] - best["bbox"][0]) * (best["bbox"][3] - best["bbox"][1])
+            box_area = (box["bbox"][2] - box["bbox"][0]) * (box["bbox"][3] - box["bbox"][1])
+            union_area = best_area + box_area - inter_area
+
+            iou = inter_area / (union_area + 1e-10)
+            if iou <= iou_threshold:
+                remaining.append(box)
+
+        boxes = remaining
+
+    return keep
+
+
+def nms(boxes_per_image: list[dict], iou_threshold: float = 0.45) -> list[dict]:
+    """Apply NMS cho tất cả classes trong một ảnh."""
+    from collections import defaultdict
+
+    # Group by class
+    by_class: dict[int, list[dict]] = defaultdict(list)
+    for box in boxes_per_image:
+        by_class[box["class"]].append(box)
+
+    # Apply NMS per class
+    result = []
+    for cls, cls_boxes in by_class.items():
+        result.extend(nms_single_class(cls_boxes, iou_threshold))
+
+    return result
+
+
 def evaluate_model(
     model,
     dataloader,
@@ -232,23 +391,91 @@ def evaluate_model(
     model.eval()
     
     # Lưu tất cả predictions và targets theo class
-    # predictions[class_id] = list of (confidence, TP/FP)
+    # predictions[class_id] = list of (confidence, is_TP)
     class_preds: dict[int, list[tuple[float, bool]]] = {i: [] for i in range(num_classes)}
     class_gts: dict[int, int] = {i: 0 for i in range(num_classes)}
 
     with torch.no_grad():
-        for images, targets in tqdm(dataloader, desc="Evaluating"):
+        for batch_idx, (images, targets) in enumerate(tqdm(dataloader, desc="Evaluating")):
             images = images.to(device)
             outputs = model(images)
 
-            # TODO: Decode outputs thành boxes
-            # Hiện tại cần implement decode logic dựa trên model output format
-            
-            # Đếm ground truths
-            for target in targets:
-                labels = target["labels"]
-                for label in labels:
-                    class_gts[label.item() if hasattr(label, 'item') else label] += 1
+            # Decode predictions từ YOLO output
+            predictions = decode_predictions(outputs, conf_threshold, num_classes)
+
+            for img_idx, img_preds in enumerate(predictions):
+                img_id = batch_idx * dataloader.batch_size + img_idx
+
+                # Apply NMS
+                img_preds = nms(img_preds, iou_threshold)
+
+                # Lấy ground truths cho ảnh này từ target
+                img_gt_boxes = []
+                img_gt_labels = []
+                for target in targets:
+                    if target.get("image_id", 0) == img_id:
+                        img_gt_boxes.extend(target.get("boxes", []).cpu().tolist())
+                        img_gt_labels.extend(target.get("labels", []).cpu().tolist())
+                        break
+
+                # Nếu target không có image_id, dùng index trong batch
+                if not img_gt_boxes and img_idx < len(targets):
+                    target = targets[img_idx]
+                    img_gt_boxes = target.get("boxes", torch.tensor([])).cpu().tolist()
+                    img_gt_labels = target.get("labels", torch.tensor([])).cpu().tolist()
+                    if isinstance(img_gt_boxes, torch.Tensor):
+                        img_gt_boxes = img_gt_boxes.tolist()
+                    if isinstance(img_gt_labels, torch.Tensor):
+                        img_gt_labels = img_gt_labels.tolist()
+                    if not isinstance(img_gt_boxes, list):
+                        img_gt_boxes = []
+                    if not isinstance(img_gt_labels, list):
+                        img_gt_labels = []
+
+                # Đếm GTs theo class
+                for label in img_gt_labels:
+                    if isinstance(label, torch.Tensor):
+                        label = label.item()
+                    if 0 <= label < num_classes:
+                        class_gts[label] += 1
+
+                # Match predictions với GTs để xác định TP/FP
+                for pred in img_preds:
+                    cls_id = pred["class"]
+                    if 0 <= cls_id < num_classes:
+                        pred_box = pred["bbox"]
+                        
+                        # Tìm GT cùng class có IoU cao nhất
+                        best_iou = 0.0
+                        matched = False
+                        
+                        for gt_idx, (gt_box, gt_label) in enumerate(zip(img_gt_boxes, img_gt_labels)):
+                            if isinstance(gt_label, torch.Tensor):
+                                gt_label = gt_label.item()
+                            if gt_label != cls_id:
+                                continue
+                            
+                            # Tính IoU
+                            x1 = max(pred_box[0], gt_box[0])
+                            y1 = max(pred_box[1], gt_box[1])
+                            x2 = min(pred_box[2], gt_box[2])
+                            y2 = min(pred_box[3], gt_box[3])
+                            
+                            inter_w = max(0, x2 - x1)
+                            inter_h = max(0, y2 - y1)
+                            inter_area = inter_w * inter_h
+                            
+                            pred_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
+                            gt_area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
+                            union_area = pred_area + gt_area - inter_area
+                            
+                            iou = inter_area / (union_area + 1e-10)
+                            
+                            if iou > best_iou:
+                                best_iou = iou
+                        
+                        is_tp = best_iou >= iou_threshold
+                        class_preds[cls_id].append((pred["score"], is_tp))
 
     # Tính AP cho mỗi class
     aps = []
@@ -256,10 +483,15 @@ def evaluate_model(
         preds = class_preds[cls]
         num_gts = class_gts[cls]
         
-        if num_gts == 0 or len(preds) == 0:
+        if num_gts == 0:
+            aps.append(0.0)
+            continue
+        
+        if len(preds) == 0:
             aps.append(0.0)
             continue
 
+        # Sort predictions by confidence descending
         preds.sort(key=lambda x: x[0], reverse=True)
         
         tp = np.array([1 if p[1] else 0 for p in preds], dtype=np.float32)
@@ -268,8 +500,9 @@ def evaluate_model(
         tp_cumsum = np.cumsum(tp)
         fp_cumsum = np.cumsum(fp)
         
+        # Precision-Recall curve
         recall = tp_cumsum / num_gts
-        precision = tp_cumsum / (tp_cumsum + fp_cumsum)
+        precision = tp_cumsum / (tp_cumsum + fp_cumsum + 1e-10)
         
         ap = compute_ap(recall, precision)
         aps.append(ap)
