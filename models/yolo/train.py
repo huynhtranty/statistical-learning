@@ -28,6 +28,8 @@ from datetime import datetime
 
 import torch
 import torch.optim as optim
+import torchvision
+import torchvision.ops
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import yaml
@@ -311,59 +313,64 @@ def decode_predictions(
     return all_batch_predictions
 
 
-def nms_single_class(boxes: list[dict], iou_threshold: float = 0.45) -> list[dict]:
-    """Apply NMS cho predictions cùng một class."""
-    if len(boxes) == 0:
+def nms_single_class(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    iou_threshold: float = 0.45,
+) -> torch.Tensor:
+    """Apply NMS cho predictions cùng một class (dùng torchvision).
+
+    Args:
+        boxes: (N, 4) tensor [x1, y1, x2, y2]
+        scores: (N,) tensor confidence scores
+        iou_threshold: IoU threshold cho suppression
+
+    Returns:
+        Indices của boxes được giữ lại
+    """
+    if boxes.shape[0] == 0:
+        return torch.tensor([], dtype=torch.long)
+    return torchvision.ops.nms(boxes, scores, iou_threshold)
+
+
+def nms(
+    predictions: list[dict],
+    iou_threshold: float = 0.45,
+) -> list[dict]:
+    """Apply NMS cho tất cả predictions.
+
+    Args:
+        predictions: List of dicts với keys: bbox [x1,y1,x2,y2], score, class
+        iou_threshold: IoU threshold cho suppression
+
+    Returns:
+        Filtered list of predictions sau NMS
+    """
+    if len(predictions) == 0:
         return []
 
-    # Sort by score descending
-    boxes = sorted(boxes, key=lambda x: x["score"], reverse=True)
+    # Extract to tensors
+    boxes_list = [p["bbox"] for p in predictions]
+    scores = torch.tensor([p["score"] for p in predictions])
+    classes = torch.tensor([p["class"] for p in predictions])
 
-    keep = []
-    while boxes:
-        best = boxes.pop(0)
-        keep.append(best)
-
-        remaining = []
-        for box in boxes:
-            # Tính IoU
-            x1 = max(best["bbox"][0], box["bbox"][0])
-            y1 = max(best["bbox"][1], box["bbox"][1])
-            x2 = min(best["bbox"][2], box["bbox"][2])
-            y2 = min(best["bbox"][3], box["bbox"][3])
-
-            inter_w = max(0, x2 - x1)
-            inter_h = max(0, y2 - y1)
-            inter_area = inter_w * inter_h
-
-            best_area = (best["bbox"][2] - best["bbox"][0]) * (best["bbox"][3] - best["bbox"][1])
-            box_area = (box["bbox"][2] - box["bbox"][0]) * (box["bbox"][3] - box["bbox"][1])
-            union_area = best_area + box_area - inter_area
-
-            iou = inter_area / (union_area + 1e-10)
-            if iou <= iou_threshold:
-                remaining.append(box)
-
-        boxes = remaining
-
-    return keep
-
-
-def nms(boxes_per_image: list[dict], iou_threshold: float = 0.45) -> list[dict]:
-    """Apply NMS cho tất cả classes trong một ảnh."""
-    from collections import defaultdict
-
-    # Group by class
-    by_class: dict[int, list[dict]] = defaultdict(list)
-    for box in boxes_per_image:
-        by_class[box["class"]].append(box)
+    boxes = torch.tensor(boxes_list)
+    if boxes.shape[-1] != 4:
+        return predictions  # Fallback
 
     # Apply NMS per class
-    result = []
-    for cls, cls_boxes in by_class.items():
-        result.extend(nms_single_class(cls_boxes, iou_threshold))
+    keep_indices_all = []
+    for cls in classes.unique().tolist():
+        cls_mask = classes == cls
+        cls_boxes = boxes[cls_mask]
+        cls_scores = scores[cls_mask]
 
-    return result
+        keep = nms_single_class(cls_boxes, cls_scores, iou_threshold)
+        # Map back to original indices
+        cls_indices = torch.where(cls_mask)[0]
+        keep_indices_all.extend(cls_indices[keep].tolist())
+
+    return [predictions[i] for i in sorted(keep_indices_all)]
 
 
 def evaluate_model(
