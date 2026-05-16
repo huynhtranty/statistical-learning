@@ -569,7 +569,7 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     start_epoch = 0
-    best_val_loss = 0.0  # mAP cao hơn = tốt hơn, nên khởi tạo = 0
+    best_val_loss = float("inf")
 
     if args.resume:
         print(f"[YOLO] Resuming from checkpoint: {args.resume}")
@@ -613,8 +613,8 @@ def main():
 
         print(f"[YOLO] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, mAP={mAP:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
 
-        if mAP > best_val_loss:  # Use mAP for model selection
-            best_val_loss = mAP
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
                 "epoch": epoch,
@@ -625,7 +625,7 @@ def main():
                 "conf_threshold": args.conf_threshold,
                 "iou_threshold": args.iou_threshold,
             }, best_checkpoint_path)
-            print(f"[YOLO] Saved best model (mAP={mAP:.4f}) to {best_checkpoint_path}")
+            print(f"[YOLO] Saved best model (val_loss={best_val_loss:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)

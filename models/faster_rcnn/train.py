@@ -272,7 +272,6 @@ def main():
 
     start_epoch = 0
     best_val_loss = float("inf")
-    best_map = 0.0
 
     if args.resume:
         print(f"[Faster R-CNN] Resuming from checkpoint: {args.resume}")
@@ -281,7 +280,6 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-        best_map = checkpoint.get("best_map", 0.0)
 
     print(f"[Faster R-CNN] Starting training for {args.epochs} epochs...")
     print(f"[Faster R-CNN] Device: {device}")
@@ -317,8 +315,7 @@ def main():
             f"mean_iou={metrics['mean_iou']:.4f}, lr={scheduler.get_last_lr()[0]:.6f}"
         )
 
-        if metrics["mAP"] > best_map:
-            best_map = metrics["mAP"]
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
@@ -326,10 +323,9 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
-                "best_map": best_map,
                 "classes": classes,
             }, best_checkpoint_path)
-            print(f"[Faster R-CNN] Saved best model (mAP={best_map:.4f}) to {best_checkpoint_path}")
+            print(f"[Faster R-CNN] Saved best model (val_loss={best_val_loss:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)
@@ -338,7 +334,6 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_loss": best_val_loss,
-                "best_map": best_map,
                 "classes": classes,
             }, final_path)
             print(f"[Faster R-CNN] Saved final model to {final_path}")
