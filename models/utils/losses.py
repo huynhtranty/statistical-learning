@@ -322,7 +322,7 @@ class YOLOLoss(nn.Module):
                 pred_wh = (2.0 * pred_xywh[:, 2:].sigmoid()).pow(2)
                 # Anchor-aware width/height theo YOLOv5:
                 # pred_wh_norm = ((2*sigmoid(t))^2) * anchor_wh_norm
-                anchor_wh = self.anchors.to(device)[scale_idx, p_anchor, :]
+                anchor_wh = self.anchors.to(device)[scale_idx, p_anchor.long(), :]
                 pred_wh = pred_wh * anchor_wh
 
                 pcx = (p_gi.float() + pred_xy[:, 0]) * cell_size_x
