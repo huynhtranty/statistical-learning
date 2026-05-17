@@ -274,12 +274,23 @@ def main():
     best_val_loss = float("inf")
 
     if args.resume:
-        print(f"[Faster R-CNN] Resuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device)
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"[Faster R-CNN] Resume checkpoint không tồn tại: {resume_path}")
+        print(f"[Faster R-CNN] Resuming from checkpoint: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint.get("epoch", 0) + 1
-        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            for _ in range(checkpoint.get("epoch", -1) + 1):
+                scheduler.step()
+        start_epoch = checkpoint.get("epoch", -1) + 1
+        best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        print(f"[Faster R-CNN] Resumed at epoch {start_epoch}, "
+              f"best val_loss so far={best_val_loss:.4f}, "
+              f"current lr={scheduler.get_last_lr()[0]:.6f}")
 
     print(f"[Faster R-CNN] Starting training for {args.epochs} epochs...")
     print(f"[Faster R-CNN] Device: {device}")
@@ -322,6 +333,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
             }, best_checkpoint_path)
@@ -333,6 +345,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
             }, final_path)
