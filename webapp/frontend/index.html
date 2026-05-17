@@ -496,10 +496,13 @@
     }
     .stage-empty {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 0.9rem;
+      gap: 1.1rem;
       padding: 4rem 1rem;
       color: var(--ink-faint);
     }
+    /* Reserve clearance below the paw so its outermost scan ring (scale 1.45)
+       doesn't crowd the text underneath. */
+    .stage-empty .paw { margin-bottom: 1.25rem; }
     /* Empty-state paw print with concentric scan rings */
     .stage-empty .paw {
       position: relative;
