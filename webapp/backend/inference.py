@@ -1,7 +1,7 @@
 """Inference glue used by the FastAPI backend.
 
-Loads the chosen model (default: YOLO — fastest of the three for the demo),
-runs a single image through it, and returns COCO-style detection records:
+Supports three trained models (Faster R-CNN, YOLO, DETR), lazily loaded into a
+process-wide cache the first time each is requested. Returns COCO-style records:
 
     {
       "model": str,
@@ -24,6 +24,7 @@ from typing import Any
 
 import torch
 from PIL import Image
+from huggingface_hub import hf_hub_download
 
 # Project root must be importable so we can reuse the trainer-branch model + decode code.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,51 +35,97 @@ from evaluation.test_and_visualize import load_model, run_predictions  # noqa: E
 from models.utils.coco_dataset import DEFAULT_CLASSES, get_class_names  # noqa: E402
 
 INPUT_SIZE = int(os.environ.get("OD_INPUT_SIZE", "640"))
-DEFAULT_MODEL = os.environ.get("OD_MODEL", "yolo")           # yolo | faster_rcnn | detr
-DEFAULT_WEIGHTS = os.environ.get("OD_WEIGHTS", "weights/yolo.pt")
 CONFIDENCE_THRESHOLD = float(os.environ.get("OD_CONF", "0.25"))
 DEVICE = os.environ.get("OD_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = int(os.environ.get("OD_NUM_CLASSES", "10"))
 
-_model = None
+# Weights live in a separate HF Model repo so the Space stays under its 1 GB quota.
+# Override with OD_WEIGHTS_REPO if you fork the project.
+WEIGHTS_REPO = os.environ.get("OD_WEIGHTS_REPO", "hytaty/od-weights")
+
+MODEL_REGISTRY: dict[str, dict[str, str]] = {
+    "faster_rcnn": {"label": "Faster R-CNN", "filename": "faster_rcnn.pt"},
+    "yolo": {"label": "YOLO", "filename": "yolo.pt"},
+    "detr": {"label": "DETR", "filename": "detr.pt"},
+}
+DEFAULT_MODEL = os.environ.get("OD_MODEL", "faster_rcnn")
+
+_model_cache: dict[str, Any] = {}
 _class_names: list[str] = []
 _load_lock = Lock()
 
 
 class ModelNotReady(RuntimeError):
-    """Raised when the configured weights file is missing.
+    """Raised when the requested model's weights file is missing on disk."""
 
-    The training team hasn't published a checkpoint yet; surface a clear
-    message instead of a cryptic torch.load error.
+
+class UnknownModel(ValueError):
+    """Raised when the client asks for a model name not in the registry."""
+
+
+def list_models() -> list[dict[str, Any]]:
+    """Return registry entries — weights are downloaded lazily from HF Hub."""
+    out = []
+    for name, cfg in MODEL_REGISTRY.items():
+        out.append(
+            {
+                "name": name,
+                "label": cfg["label"],
+                "available": True,
+                "loaded": name in _model_cache,
+                "default": name == DEFAULT_MODEL,
+            }
+        )
+    return out
+
+
+def _resolve_weights_path(model_name: str) -> Path:
+    """Return a local path to the weights file, downloading from HF Hub if needed.
+
+    A local `weights/<filename>` is preferred when present (handy for offline dev).
+    Otherwise `hf_hub_download` fetches into the HF cache and returns the cached path.
     """
+    cfg = MODEL_REGISTRY[model_name]
+    local_override = PROJECT_ROOT / "weights" / cfg["filename"]
+    if local_override.exists():
+        return local_override
+    cached = hf_hub_download(repo_id=WEIGHTS_REPO, filename=cfg["filename"])
+    return Path(cached)
 
 
-def _resolve_weights_path() -> Path:
-    path = Path(DEFAULT_WEIGHTS)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return path
-
-
-def _ensure_model_loaded() -> None:
-    """Lazily load the model + class names once per process."""
-    global _model, _class_names
-    if _model is not None:
+def _ensure_class_names() -> None:
+    global _class_names
+    if _class_names:
         return
+    try:
+        _class_names = get_class_names()
+    except Exception:
+        _class_names = list(DEFAULT_CLASSES)
+
+
+def _ensure_model_loaded(model_name: str):
+    """Lazily load `model_name` and keep it in the process-wide cache."""
+    if model_name not in MODEL_REGISTRY:
+        raise UnknownModel(
+            f"Unknown model '{model_name}'. Available: {list(MODEL_REGISTRY)}"
+        )
+    cached = _model_cache.get(model_name)
+    if cached is not None:
+        return cached
     with _load_lock:
-        if _model is not None:
-            return
-        weights_path = _resolve_weights_path()
-        if not weights_path.exists():
-            raise ModelNotReady(
-                f"Weights not found at {weights_path}. "
-                f"Set OD_WEIGHTS or wait for the trainer team to publish a checkpoint."
-            )
-        _model = load_model(DEFAULT_MODEL, str(weights_path), DEVICE, NUM_CLASSES)
+        cached = _model_cache.get(model_name)
+        if cached is not None:
+            return cached
         try:
-            _class_names = get_class_names()
-        except Exception:
-            _class_names = list(DEFAULT_CLASSES)
+            weights_path = _resolve_weights_path(model_name)
+        except Exception as exc:
+            raise ModelNotReady(
+                f"Could not fetch weights for '{model_name}' from {WEIGHTS_REPO}: {exc}"
+            ) from exc
+        model = load_model(model_name, str(weights_path), DEVICE, NUM_CLASSES)
+        _model_cache[model_name] = model
+        _ensure_class_names()
+        return model
 
 
 def _decode_image(image_bytes: bytes) -> Image.Image:
@@ -88,22 +135,22 @@ def _decode_image(image_bytes: bytes) -> Image.Image:
         raise ValueError(f"Could not decode image: {exc}") from exc
 
 
-def predict_image(image_bytes: bytes) -> dict[str, Any]:
+def predict_image(image_bytes: bytes, model_name: str | None = None) -> dict[str, Any]:
+    chosen = model_name or DEFAULT_MODEL
+    model = _ensure_model_loaded(chosen)
+
     pil_img = _decode_image(image_bytes)
     width, height = pil_img.size
 
-    _ensure_model_loaded()
-
     # run_predictions takes a Path; spill bytes to a temp file so we don't
     # duplicate the (already fragile) decode logic from evaluation/test_and_visualize.py.
-    suffix = ".jpg"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         pil_img.save(tmp, format="JPEG", quality=95)
         tmp_path = Path(tmp.name)
     try:
         boxes, labels, scores = run_predictions(
-            _model,
-            DEFAULT_MODEL,
+            model,
+            chosen,
             tmp_path,
             DEVICE,
             input_size=INPUT_SIZE,
@@ -128,7 +175,7 @@ def predict_image(image_bytes: bytes) -> dict[str, Any]:
         )
 
     return {
-        "model": DEFAULT_MODEL,
+        "model": chosen,
         "image_size": [width, height],
         "detections": detections,
     }

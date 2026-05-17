@@ -109,3 +109,8 @@ models/yolo/checkpoints/
 *.pt
 *.pdf
 .cursor/
+.venv/
+models/*/logs/
+models/*/runs/
+models/*/checkpoints/
+*.tfevents.*

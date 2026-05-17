@@ -1,0 +1,29 @@
+.git
+.venv
+.cursor
+.idea
+.vscode
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Training data + intermediate artifacts (not needed for inference)
+data
+evaluation/results
+models/*/checkpoints
+models/*/runs
+models/*/logs
+runs
+
+# Other model weights we are not serving
+*.pth
+yolo.pt
+detr.pt
+
+# Misc
+*.pdf
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db

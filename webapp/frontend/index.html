@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Object Detection — Vision Lab</title>
+  <title>Animal Detector · Object Detection Final Project</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -316,7 +316,12 @@
       padding: 1.25rem 1.5rem;
       display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;
       margin-bottom: 1.25rem;
+      position: sticky;
+      top: 0.75rem;
+      z-index: 20;
     }
+    /* HTML [hidden] should win over display: flex on .stage-empty + others. */
+    [hidden] { display: none !important; }
     .field { display: flex; align-items: center; gap: 0.6rem; }
     .field label { font-size: 0.85rem; color: var(--ink-dim); }
 
@@ -377,6 +382,49 @@
       min-width: 2.6rem;
       font-weight: 600;
       font-size: 0.95rem;
+    }
+
+    /* Model segmented control */
+    .seg {
+      display: inline-flex;
+      padding: 3px;
+      gap: 2px;
+      border-radius: var(--radius-md);
+      background: rgba(154,120,220,0.08);
+      border: 1px solid rgba(154,120,220,0.22);
+    }
+    .seg button {
+      appearance: none;
+      background: transparent;
+      border: 0;
+      color: var(--ink-dim);
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 0.4rem 0.85rem;
+      border-radius: calc(var(--radius-md) - 4px);
+      cursor: pointer;
+      transition: color 0.18s ease, background 0.18s ease, box-shadow 0.25s ease;
+      white-space: nowrap;
+    }
+    .seg button:hover:not(.active):not(:disabled) {
+      color: var(--ink);
+      background: rgba(92,197,216,0.10);
+    }
+    .seg button.active {
+      background: linear-gradient(135deg, rgba(154,120,220,0.32), rgba(92,197,216,0.22));
+      color: var(--ink);
+      box-shadow: 0 2px 10px rgba(154,120,220,0.22), 0 0 0 1px rgba(255,255,255,0.04) inset;
+    }
+    .seg button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      text-decoration: line-through;
+    }
+    .seg-placeholder {
+      color: var(--ink-faint);
+      font-size: 0.82rem;
+      padding: 0.4rem 0.85rem;
     }
 
     /* Primary button */
@@ -452,69 +500,50 @@
       padding: 4rem 1rem;
       color: var(--ink-faint);
     }
-    /* Empty-state iris (matches the wireframe Eye in the 3D scene) */
-    .stage-empty .iris {
+    /* Empty-state paw print with concentric scan rings */
+    .stage-empty .paw {
       position: relative;
-      width: 120px; height: 120px;
+      width: 150px; height: 150px;
+      display: flex; align-items: center; justify-content: center;
+      animation: paw-float 5s ease-in-out infinite;
+    }
+    .stage-empty .paw svg {
+      width: 76px; height: 76px;
+      color: rgba(92, 197, 216, 0.72);
+      filter:
+        drop-shadow(0 0 10px rgba(92, 197, 216, 0.45))
+        drop-shadow(0 0 26px rgba(154, 120, 220, 0.30));
+      animation: paw-pulse 2.6s ease-in-out infinite;
+      position: relative;
+      z-index: 1;
+    }
+    .stage-empty .paw .scan-ring {
+      position: absolute; inset: 6px;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(92,197,216,0.05), rgba(154,120,220,0.025) 60%, transparent 70%);
-      box-shadow: 0 0 50px rgba(92,197,216,0.12), 0 0 100px rgba(154,120,220,0.08);
-      animation: float 5s ease-in-out infinite;
+      border: 1px solid rgba(154, 120, 220, 0.45);
+      box-shadow: 0 0 14px rgba(154, 120, 220, 0.20) inset, 0 0 14px rgba(92, 197, 216, 0.15);
+      opacity: 0;
+      animation: scan-ring 3.2s ease-out infinite;
     }
-    .stage-empty .iris-ring {
-      position: absolute; inset: 0;
+    .stage-empty .paw .scan-ring.s2 { animation-delay: 1.05s; border-color: rgba(92, 197, 216, 0.4); }
+    .stage-empty .paw .scan-ring.s3 { animation-delay: 2.1s;  border-color: rgba(215, 110, 181, 0.35); }
+    .stage-empty .paw .orbit {
+      position: absolute; inset: -24px;
       border-radius: 50%;
-      border-style: solid;
-      pointer-events: none;
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      animation: spin 24s linear infinite;
     }
-    .stage-empty .iris-ring-1 {
-      inset: 22px;
-      border-width: 1.5px;
-      border-color: rgba(92,197,216,0.7);
-      box-shadow: 0 0 10px rgba(92,197,216,0.35), inset 0 0 8px rgba(92,197,216,0.2);
-      animation: blink 5.5s ease-in-out infinite;
+    @keyframes paw-float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-8px); }
     }
-    .stage-empty .iris-ring-2 {
-      inset: 36px;
-      border-width: 1px;
-      border-color: rgba(215,110,181,0.6);
-      box-shadow: 0 0 8px rgba(215,110,181,0.3);
-      animation: blink 5.5s ease-in-out infinite;
+    @keyframes paw-pulse {
+      0%, 100% { transform: scale(1); opacity: 0.88; }
+      50%      { transform: scale(1.07); opacity: 1; }
     }
-    .stage-empty .iris-pupil {
-      position: absolute;
-      left: 50%; top: 50%;
-      width: 12px; height: 12px;
-      transform: translate(-50%, -50%);
-      border-radius: 50%;
-      background: rgba(225, 220, 240, 0.9);
-      box-shadow: 0 0 10px rgba(225,220,240,0.55), 0 0 22px rgba(92,197,216,0.35);
-      animation: pupilJitter 4s ease-in-out infinite, blink 5.5s ease-in-out infinite;
-    }
-    .stage-empty .iris-orbit {
-      position: absolute; inset: -22px;
-      border-radius: 50%;
-      border: 1px dashed rgba(255,255,255,0.14);
-      animation: spin 22s linear infinite;
-    }
-    @keyframes float {
-      0%,100% { transform: translateY(0); }
-      50%     { transform: translateY(-10px); }
-    }
-    @keyframes pupilJitter {
-      0%,100% { transform: translate(-50%, -50%); }
-      25%     { transform: translate(calc(-50% + 3px), calc(-50% - 1px)); }
-      55%     { transform: translate(calc(-50% - 2px), calc(-50% + 2px)); }
-      80%     { transform: translate(calc(-50% + 1px), calc(-50% + 1px)); }
-    }
-    @keyframes blink {
-      0%, 96%, 100% { transform: scaleY(1); }
-      97%, 99%      { transform: scaleY(0.08); }
-    }
-    .stage-empty .iris-pupil { animation-name: pupilJitter, pupilBlink; }
-    @keyframes pupilBlink {
-      0%, 96%, 100% { opacity: 1; }
-      97%, 99%      { opacity: 0; }
+    @keyframes scan-ring {
+      0%   { transform: scale(0.55); opacity: 0.7; }
+      100% { transform: scale(1.45); opacity: 0; }
     }
 
     .image-wrap {
@@ -790,9 +819,9 @@
 
   <main class="app">
     <header>
-      <div class="eyebrow">Object Detection · Vision Lab</div>
+      <div class="eyebrow">Final Project · Object Detection</div>
       <h1>See what the model sees.</h1>
-      <p class="sub">Upload an image. The detector scans it, traces every object it recognises, and tells you how sure it is.</p>
+      <p class="sub">Upload a photo. The detector finds every animal in frame, draws a tight box around it, names the species, and tells you how sure it is — across ten trained classes.</p>
     </header>
 
     <form id="upload-form" class="glass controls">
@@ -804,6 +833,13 @@
         <input type="file" id="image-input" accept="image/*" required />
       </label>
       <span class="file-name" id="file-name">no file selected</span>
+
+      <div class="field model-pick">
+        <label>Model</label>
+        <div class="seg" id="model-seg" role="radiogroup" aria-label="Detection model">
+          <span class="seg-placeholder">loading…</span>
+        </div>
+      </div>
 
       <div class="field slider-wrap">
         <label for="min-conf">Min confidence</label>
@@ -827,14 +863,21 @@
     <div class="workspace">
       <section class="glass stage" id="stage">
         <div class="stage-empty" id="stage-empty">
-          <div class="iris" aria-hidden="true">
-            <span class="iris-ring iris-ring-1"></span>
-            <span class="iris-ring iris-ring-2"></span>
-            <span class="iris-pupil"></span>
-            <span class="iris-orbit"></span>
+          <div class="paw" aria-hidden="true">
+            <span class="orbit"></span>
+            <span class="scan-ring"></span>
+            <span class="scan-ring s2"></span>
+            <span class="scan-ring s3"></span>
+            <svg viewBox="0 0 200 200" fill="currentColor">
+              <ellipse cx="50" cy="68" rx="14" ry="20" />
+              <ellipse cx="82" cy="42" rx="13" ry="20" />
+              <ellipse cx="118" cy="42" rx="13" ry="20" />
+              <ellipse cx="150" cy="68" rx="14" ry="20" />
+              <path d="M62 130 Q62 178 100 178 Q138 178 138 130 Q138 96 100 96 Q62 96 62 130 Z" />
+            </svg>
           </div>
-          <div>The detector is idle. Show it something.</div>
-          <div class="empty-meta">YOLO · 10 trained classes · drop an image or click <em>Choose image</em></div>
+          <div>The detector is waiting. Drop in a photo with an animal.</div>
+          <div class="empty-meta">Pick a model above · 10 classes: cat, dog, horse, cow, bird, sheep, elephant, bear, zebra, giraffe</div>
         </div>
         <div class="image-wrap" id="image-wrap" hidden>
           <img id="image-el" alt="" />
@@ -875,7 +918,7 @@
       </aside>
     </div>
 
-    <footer>FastAPI · Three.js · UnrealBloom · the YOLO checkpoint your teammates are training right now.</footer>
+    <footer>Three trained models — Faster R-CNN · YOLO · DETR — on a 10-class animal subset · FastAPI backend · Three.js + UnrealBloom stage · Object Detection Final Project demo.</footer>
   </main>
 
   <script type="module">
@@ -1028,79 +1071,130 @@
       const magenta = makeField(220,  0xcc4aa3, 10, 1800);
       scene.add(violet, cyan, magenta);
 
-      // ── A pair of Eyes flanking the card column (left + right) ──
-      // Built via a factory so left + right share construction.
-      function createEye(xPos) {
+      // ── Animal-class constellation cluster (replaces the wireframe Eye) ──
+      // For each of the 10 trained classes, draw a small star pattern with
+      // connecting lines + a glowing class-name sprite. They cross-fade through
+      // the cycle so the demo cycles "CAT … DOG … HORSE …" while the camera
+      // gently parallaxes with the cursor.
+      function createConstellationCluster(xPos) {
         const group = new THREE.Group();
+        group.position.set(xPos, 0, -150);
 
-        const eyeball = new THREE.Mesh(
-          new THREE.SphereGeometry(110, 28, 18),
+        const classes = ['cat', 'dog', 'horse', 'cow', 'bird',
+                         'sheep', 'elephant', 'bear', 'zebra', 'giraffe'];
+        const palette = [0xcfb4ff, 0x9adff0, 0xffb6d9, 0xd2b56a];
+
+        // Outer slow-rotating dashed orbit ring for visual anchor.
+        const orbitRing = new THREE.Mesh(
+          new THREE.TorusGeometry(195, 0.4, 8, 128),
           new THREE.MeshBasicMaterial({
             color: 0x8a66cc,
-            wireframe: true,
             transparent: true,
             opacity: 0.14,
             blending: THREE.AdditiveBlending,
           }),
         );
-        group.add(eyeball);
+        group.add(orbitRing);
 
-        const iris = new THREE.Mesh(
-          new THREE.TorusGeometry(56, 2, 12, 96),
-          new THREE.MeshBasicMaterial({
-            color: 0x33a8c2,
+        const constellations = classes.map((name, idx) => {
+          const sub = new THREE.Group();
+
+          // 6–8 random stars in a flattish ~160x160x60 volume.
+          const n = 6 + Math.floor(Math.random() * 3);
+          const pts = [];
+          const positions = new Float32Array(n * 3);
+          for (let j = 0; j < n; j++) {
+            const x = (Math.random() - 0.5) * 180;
+            const y = (Math.random() - 0.5) * 180;
+            const z = (Math.random() - 0.5) * 60;
+            pts.push(new THREE.Vector3(x, y, z));
+            positions[j*3+0] = x;
+            positions[j*3+1] = y;
+            positions[j*3+2] = z;
+          }
+
+          const starGeom = new THREE.BufferGeometry();
+          starGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          const starMat = new THREE.PointsMaterial({
+            map: sprite,
+            size: 18,
+            color: palette[idx % palette.length],
             transparent: true,
-            opacity: 0.6,
+            opacity: 0,
+            depthWrite: false,
             blending: THREE.AdditiveBlending,
-          }),
-        );
-        iris.position.z = 96;
-        group.add(iris);
+            sizeAttenuation: true,
+          });
+          const stars = new THREE.Points(starGeom, starMat);
+          sub.add(stars);
 
-        const irisInner = new THREE.Mesh(
-          new THREE.TorusGeometry(34, 1.1, 10, 80),
-          new THREE.MeshBasicMaterial({
-            color: 0xcc4aa3,
+          // Connect each star to its 2 nearest neighbours, de-duplicated.
+          const seen = new Set();
+          const linePositions = [];
+          for (let j = 0; j < pts.length; j++) {
+            const nearest = pts
+              .map((p, k) => ({ d: k === j ? Infinity : p.distanceTo(pts[j]), k }))
+              .sort((a, b) => a.d - b.d)
+              .slice(0, 2);
+            for (const { k } of nearest) {
+              const key = j < k ? `${j}-${k}` : `${k}-${j}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              linePositions.push(pts[j].x, pts[j].y, pts[j].z);
+              linePositions.push(pts[k].x, pts[k].y, pts[k].z);
+            }
+          }
+          const lineGeom = new THREE.BufferGeometry();
+          lineGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(new Float32Array(linePositions), 3),
+          );
+          const lineMat = new THREE.LineBasicMaterial({
+            color: 0x5cc5d8,
             transparent: true,
-            opacity: 0.45,
+            opacity: 0,
             blending: THREE.AdditiveBlending,
-          }),
-        );
-        irisInner.position.z = 99;
-        group.add(irisInner);
+          });
+          const lines = new THREE.LineSegments(lineGeom, lineMat);
+          sub.add(lines);
 
-        // Pupil — small soft-bright sphere; bloom will halo it gently.
-        const pupil = new THREE.Mesh(
-          new THREE.SphereGeometry(11, 18, 18),
-          new THREE.MeshBasicMaterial({ color: 0xddd0f0 }),
-        );
-        pupil.position.z = 103;
-        group.add(pupil);
-
-        // Outer scanner rings — counter-rotate, pulse with breath.
-        const scannerRing1 = new THREE.Mesh(
-          new THREE.TorusGeometry(170, 0.7, 8, 128),
-          new THREE.MeshBasicMaterial({
-            color: 0x8a66cc,
+          // Class name → CanvasTexture → Sprite floating below the stars.
+          const labelCanvas = document.createElement('canvas');
+          labelCanvas.width = 512;
+          labelCanvas.height = 160;
+          const lctx = labelCanvas.getContext('2d');
+          lctx.font = '600 72px "Space Grotesk", "Inter", sans-serif';
+          lctx.fillStyle = 'rgba(235, 228, 250, 0.95)';
+          lctx.textAlign = 'center';
+          lctx.textBaseline = 'middle';
+          lctx.shadowColor = 'rgba(154, 120, 220, 0.9)';
+          lctx.shadowBlur = 28;
+          lctx.fillText(name.toUpperCase(), 256, 80);
+          // Re-stroke with a thin outline so it doesn't wash out against bloom.
+          lctx.lineWidth = 1.2;
+          lctx.strokeStyle = 'rgba(92, 197, 216, 0.65)';
+          lctx.shadowBlur = 0;
+          lctx.strokeText(name.toUpperCase(), 256, 80);
+          const tex = new THREE.CanvasTexture(labelCanvas);
+          if ('SRGBColorSpace' in THREE) tex.colorSpace = THREE.SRGBColorSpace;
+          const labelMat = new THREE.SpriteMaterial({
+            map: tex,
             transparent: true,
-            opacity: 0.16,
+            opacity: 0,
+            depthWrite: false,
             blending: THREE.AdditiveBlending,
-          }),
-        );
-        const scannerRing2 = new THREE.Mesh(
-          new THREE.TorusGeometry(205, 0.5, 8, 128),
-          new THREE.MeshBasicMaterial({
-            color: 0x33a8c2,
-            transparent: true,
-            opacity: 0.12,
-            blending: THREE.AdditiveBlending,
-          }),
-        );
-        group.add(scannerRing1, scannerRing2);
+          });
+          const label = new THREE.Sprite(labelMat);
+          label.scale.set(220, 70, 1);
+          label.position.set(0, -125, 0);
+          sub.add(label);
 
-        group.position.set(xPos, 0, -150);
+          return { sub, stars, lines, label, name };
+        });
+
+        constellations.forEach((c) => group.add(c.sub));
         scene.add(group);
-        return { group, eyeball, iris, irisInner, pupil, scannerRing1, scannerRing2 };
+        return { group, constellations, orbitRing };
       }
 
       // ── Neural network (right side, complement to the Eye) ──────
@@ -1179,7 +1273,7 @@
         };
       }
 
-      const leftEye = createEye(-820);
+      const cluster = createConstellationCluster(-820);
       const network = createNeuralNet(820);
 
       // ── Ambient detection cloud: wireframe bboxes drifting in 3D ──
@@ -1306,23 +1400,30 @@
         violet.rotation.y  =  t * 0.018;
         cyan.rotation.y    = -t * 0.014;
 
-        // ── Eye (left side): tracks cursor, blinks, scanner rings pulse ──
-        const breath = 1.0 + Math.sin(t * 1.2) * 0.04;
-        const blink = t % 5.5;
-        const blinking = blink < 0.18;
-        const blinkScale = blinking ? Math.max(0.05, Math.abs(Math.sin(blink / 0.18 * Math.PI))) : 1.0;
-        leftEye.group.lookAt(target.x * 9, target.y * 9, 800);
-        leftEye.pupil.position.x = Math.sin(t * 0.7) * 2.2 + Math.cos(t * 3.1) * 0.6;
-        leftEye.pupil.position.y = Math.cos(t * 0.55) * 2.0;
-        leftEye.scannerRing1.rotation.z =  t * 0.32;
-        leftEye.scannerRing2.rotation.z = -t * 0.21;
-        leftEye.scannerRing1.scale.setScalar(breath);
-        leftEye.scannerRing2.scale.setScalar(1.0 / breath);
-        leftEye.eyeball.rotation.y = t * 0.05;
-        leftEye.eyeball.scale.y = blinkScale;
-        leftEye.iris.scale.y = blinkScale;
-        leftEye.irisInner.scale.y = blinkScale;
-        leftEye.pupil.visible = blinkScale > 0.35;
+        // ── Constellation cluster (left side): cycle through animal classes ──
+        // Full cycle hits all 10 classes in ~60s (6s each, ~0.9s cross-fade).
+        // Auto-rotates gently — no cursor tracking, to avoid motion sickness.
+        const cycleDuration = 6.0;
+        const fadeDuration  = 0.9;
+        const totalCycle    = cycleDuration * cluster.constellations.length;
+        const tCycle        = t % totalCycle;
+        cluster.group.rotation.y = Math.sin(t * 0.06) * 0.22;
+        cluster.group.rotation.x = Math.cos(t * 0.04) * 0.10;
+        cluster.orbitRing.rotation.z = t * 0.03;
+        cluster.constellations.forEach((c, i) => {
+          let dt = tCycle - i * cycleDuration;
+          if (dt < -totalCycle / 2) dt += totalCycle;
+          if (dt >  totalCycle / 2) dt -= totalCycle;
+          let op;
+          if (dt < 0)                                 op = Math.max(0, 1 + dt / fadeDuration);
+          else if (dt < cycleDuration - fadeDuration) op = 1;
+          else                                        op = Math.max(0, (cycleDuration - dt) / fadeDuration);
+          c.stars.material.opacity = op * 0.90;
+          c.lines.material.opacity = op * 0.45;
+          c.label.material.opacity = op * 0.95;
+          // Subtle inward drift while visible — feels alive.
+          c.sub.rotation.z = t * 0.04 * (i % 2 === 0 ? 1 : -1);
+        });
 
         // ── Neural network (right side): gentle drift + signal propagation ──
         network.group.rotation.y = Math.sin(t * 0.18) * 0.3;
@@ -1482,7 +1583,10 @@
     // ════════════════════════════════════════════════════════════════
     // Detection app
     // ════════════════════════════════════════════════════════════════
-    const API = "http://localhost:8000/predict";
+    const API_BASE = window.location.hostname === "localhost" && window.location.port !== "8000"
+      ? "http://localhost:8000"
+      : "";
+    const API = `${API_BASE}/predict`;
     const PALETTE = [
       "#d76eb5", "#5cc5d8", "#9a78dc", "#cca960",
       "#5ab896", "#d78080", "#7fc7d4", "#c79cc4",
@@ -1512,9 +1616,11 @@
     const actionsEl   = document.getElementById('actions');
     const saveBtn     = document.getElementById('save-btn');
     const imageClose  = document.getElementById('image-close');
+    const modelSeg    = document.getElementById('model-seg');
 
     let currentImageDims = null;
     let currentDetections = [];
+    let selectedModel = null;
 
     function setStatus(text, kind = 'idle') {
       statusText.textContent = text;
@@ -1731,6 +1837,7 @@
 
       const fd = new FormData();
       fd.append('image', file);
+      if (selectedModel) fd.append('model', selectedModel);
 
       try {
         const res = await fetch(API, { method: 'POST', body: fd });
@@ -1907,7 +2014,7 @@
       apiBadge.className = 'api-badge busy';
       apiBadgeTxt.textContent = 'API checking…';
       try {
-        const res = await fetch('http://localhost:8000/health', { method: 'GET' });
+        const res = await fetch(`${API_BASE}/health`, { method: 'GET' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         apiBadge.className = 'api-badge ok';
         apiBadgeTxt.textContent = 'API ready';
@@ -1919,6 +2026,44 @@
     checkHealth();
     apiBadge.style.cursor = 'pointer';
     apiBadge.addEventListener('click', checkHealth);
+
+    // ════════════════════════════════════════════════════════════════
+    // Model selector — populated from GET /models
+    // ════════════════════════════════════════════════════════════════
+    function selectModel(name) {
+      selectedModel = name;
+      modelSeg.querySelectorAll('button').forEach((b) => {
+        b.classList.toggle('active', b.dataset.model === name);
+      });
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch(`${API_BASE}/models`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        modelSeg.innerHTML = '';
+        let toSelect = null;
+        (json.models || []).forEach((m) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.dataset.model = m.name;
+          btn.textContent = m.label;
+          if (!m.available) {
+            btn.disabled = true;
+            btn.title = 'Weights file not deployed on the server.';
+          } else {
+            btn.addEventListener('click', () => selectModel(m.name));
+            if (m.default || toSelect === null) toSelect = m.name;
+          }
+          modelSeg.appendChild(btn);
+        });
+        if (toSelect) selectModel(toSelect);
+      } catch {
+        modelSeg.innerHTML = '<span class="seg-placeholder">unavailable</span>';
+      }
+    }
+    loadModels();
   </script>
 </body>
 </html>
