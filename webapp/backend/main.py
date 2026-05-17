@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from .inference import predict_image
+from .inference import ModelNotReady, predict_image
 
 app = FastAPI(title="Object Detection Demo", version="0.1.0")
 
@@ -39,4 +39,9 @@ async def predict(image: UploadFile = File(...)) -> dict[str, Any]:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image.")
     image_bytes = await image.read()
-    return predict_image(image_bytes)
+    try:
+        return predict_image(image_bytes)
+    except ModelNotReady as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
