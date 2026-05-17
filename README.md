@@ -138,13 +138,13 @@ Mỗi model có training entrypoint riêng. Tất cả đều load pretrained m�
 
 ```bash
 # Faster R-CNN — load COCO detector, replace box predictor cho 11 class (10 + bg)
-python models/faster_rcnn/train.py --data_root data --epochs 50 --batch_size 4 --output weights/faster_rcnn.pt --device cuda
+python models/faster_rcnn/train.py --data_root data --epochs 70 --batch_size 8 --output weights/faster_rcnn.pt --device cuda
 
 # YOLO custom — backbone ResNet-34 ImageNet pretrained, neck + head random
-python models/yolo/train.py --data_root data --epochs 50 --batch_size 8 --output weights/yolo.pt --device cuda
+python models/yolo/train.py --data_root data --epochs 70 --batch_size 8 --output weights/yolo.pt --device cuda --augment
 
 # DETR — load HuggingFace facebook/detr-resnet-50 COCO detector, replace class head
-python models/detr/train.py --data_root data --epochs 50 --batch_size 8 --output weights/detr.pt --device cuda
+python models/detr/train.py --data_root data --epochs 70 --batch_size 8 --output weights/detr.pt --device cuda --augment
 ```
 
 > **Lưu ý**: vì 3 model đều pretrained nên 10–15 epochs đã cho kết quả khá tốt. Train từ scratch (`pretrained_*=False`) sẽ cần 100+ epochs.

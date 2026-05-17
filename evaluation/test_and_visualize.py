@@ -105,6 +105,9 @@ def draw_boxes(
 
     for i, (box, label) in enumerate(zip(boxes, labels)):
         x, y, w, h = box
+        # Filter NaN/Inf values
+        if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(w) or not np.isfinite(h):
+            continue
         x1, y1 = int(x), int(y)
         x2, y2 = int(x + w), int(y + h)
 
@@ -485,17 +488,23 @@ def run_predictions(
                 if scores.item() < conf_threshold:
                     continue
                 cx, cy, bw, bh = box
+                # Filter NaN values
+                if not np.isfinite(cx) or not np.isfinite(cy) or not np.isfinite(bw) or not np.isfinite(bh):
+                    continue
                 x = (cx - bw / 2) * orig_w
                 y = (cy - bh / 2) * orig_h
                 w = bw * orig_w
                 h = bh * orig_h
+                # Filter NaN from math operations
+                if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(w) or not np.isfinite(h):
+                    continue
                 x = max(0, min(x, orig_w))
                 y = max(0, min(y, orig_h))
                 w = min(w, orig_w - x)
                 h = min(h, orig_h - y)
                 if w <= 0 or h <= 0:
                     continue
-                result_boxes.append([x, y, w, h])
+                result_boxes.append([float(x), float(y), float(w), float(h)])
                 result_labels.append(int(labels.item()))
                 result_scores.append(float(scores.item()))
 
