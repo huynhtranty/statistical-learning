@@ -1,18 +1,8 @@
 """
-prepare_animal_dataset.py  (Kaggle + COCO CDN edition)
-=======================================================
-Yêu cầu:
-  pip install kaggle
-
-Cấu hình Kaggle credentials:
-  - Vào https://www.kaggle.com → Account → Create API Token → tải kaggle.json
-  - Dat file vao %USERPROFILE%\.kaggle\kaggle.json  (Windows)
-               hoac ~/.kaggle/kaggle.json            (Linux/Mac)
-
-Cách dùng:
-  python data/source/prepare_animal_dataset.py
-  python data/source/prepare_animal_dataset.py --split 0.8 0.1 0.1
-  python data/source/prepare_animal_dataset.py --workers 8
+prepare_animal_dataset.py
+=========================
+Tải COCO 2017 (train + val) qua FiftyOne, lọc các lớp động vật,
+rồi chia thành train/val/test với tỷ lệ tuỳ chỉnh.
 """
 
 import argparse, json, shutil, random

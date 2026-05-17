@@ -51,15 +51,61 @@ def evaluate(
 
     Returns a dict with keys: mAP_50, mAP_50_95, per_class_AP, fps, model_size_mb.
     """
-    # TODO: implement using pycocotools
-    #   from pycocotools.coco import COCO
-    #   from pycocotools.cocoeval import COCOeval
-    #   gt = COCO(str(ground_truth_path)); dt = gt.loadRes(str(predictions_path))
-    #   ev = COCOeval(gt, dt, "bbox"); ev.evaluate(); ev.accumulate(); ev.summarize()
-    #   - mAP_50_95 = ev.stats[0]
-    #   - mAP_50    = ev.stats[1]
-    #   - per_class_AP: iterate categories, slice ev.eval["precision"] and average
-    raise NotImplementedError("evaluate: implement pycocotools-based mAP")
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except Exception as exc:
+        raise RuntimeError(
+            "pycocotools chưa sẵn sàng. Cài bằng `pip install pycocotools` rồi chạy lại."
+        ) from exc
+
+    gt = COCO(str(ground_truth_path))
+
+    with predictions_path.open("r", encoding="utf-8") as f:
+        predictions_data = json.load(f)
+    if not isinstance(predictions_data, list):
+        raise ValueError(f"Predictions file phải là list COCO results: {predictions_path}")
+
+    model_size_mb = 0.0
+    if weights_path is not None and weights_path.exists():
+        model_size_mb = weights_path.stat().st_size / (1024.0 * 1024.0)
+
+    if len(predictions_data) == 0:
+        return {
+            "mAP_50": 0.0,
+            "mAP_50_95": 0.0,
+            "per_class_AP": {},
+            "fps": float(fps),
+            "model_size_mb": float(model_size_mb),
+        }
+
+    dt = gt.loadRes(predictions_data)
+    ev = COCOeval(gt, dt, "bbox")
+    ev.evaluate()
+    ev.accumulate()
+    ev.summarize()
+
+    mAP_50_95 = float(ev.stats[0])
+    mAP_50 = float(ev.stats[1])
+
+    cat_ids = gt.getCatIds()
+    cat_info = {cat["id"]: cat["name"] for cat in gt.loadCats(cat_ids)}
+    precision = ev.eval.get("precision")
+    # precision shape: [T, R, K, A, M]
+    per_class_ap: dict[str, float] = {}
+    if precision is not None:
+        for k_idx, cat_id in enumerate(ev.params.catIds):
+            p = precision[:, :, k_idx, 0, -1]
+            p = p[p > -1]
+            per_class_ap[cat_info.get(cat_id, str(cat_id))] = float(p.mean()) if p.size > 0 else 0.0
+
+    return {
+        "mAP_50": mAP_50,
+        "mAP_50_95": mAP_50_95,
+        "per_class_AP": per_class_ap,
+        "fps": float(fps),
+        "model_size_mb": float(model_size_mb),
+    }
 
 
 def main() -> None:

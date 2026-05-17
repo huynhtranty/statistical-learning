@@ -1,41 +1,112 @@
-# YOLO
+# YOLO (You Only Look Once)
 
-One-stage detector via [Ultralytics YOLOv8](https://docs.ultralytics.com/). Selected as the **one-stage / real-time** representative — designed for high FPS and a strong accuracy/latency tradeoff.
+## Mô tả
 
-## Model variant
+YOLO là mô hình **one-stage detector** nổi tiếng với tốc độ inference nhanh.
+Implementation trong project là phiên bản đơn giản hoá tự xây, gồm 3 phần:
 
-`yolov8n` (nano) by default — light enough for CPU inference in the web app demo. Switch to `yolov8s` / `yolov8m` in `config.yaml` for higher mAP at the cost of FPS.
+1. **Backbone** — mặc định **ResNet-34 ImageNet pretrained** (torchvision); option `use_csp_backbone=True` để dùng CSPDarkNet from-scratch cho phần "tự xây" trong báo cáo.
+2. **Neck** (FPN-style) — top-down pathway kết hợp feature ở 3 scale (stride 8/16/32). Channels (128, 256, 512) khớp ResNet-34.
+3. **Head** — predict (tx, ty, tw, th, objectness, num_classes) cho 3 anchor / cell ở mỗi scale.
 
-## Training
+## Loss — chi tiết quan trọng
+
+`YOLOLoss` trong [models/utils/losses.py](../utils/losses.py) đã được refactor theo phong cách YOLOv5:
+
+- **Center-region assignment**: mỗi GT được gán cho **1-3 cells** (center + neighbor cùng nửa cell), không phải chỉ 1 cell. Tăng positive samples 1.5-3x → gradient mạnh hơn → hội tụ nhanh hơn trên dataset nhỏ.
+- **YOLOv5 xy parameterization**: `pred_xy = 2·sigmoid(t) − 0.5` ∈ [-0.5, 1.5] — cho phép neighbor cells dự đoán đúng center của GT.
+- **YOLOv5 wh parameterization**: `pred_wh = (2·sigmoid(t))²` ∈ [0, 4] — gradient ổn định ở large box, không saturate như sigmoid thuần.
+- **Box loss**: GIoU + L1 trên (cx, cy, w, h) chuẩn hoá. L1 giúp khi GIoU saturate (pred lọt hoàn toàn trong GT).
+- **Focal objectness**: α=0.25, γ=2.0 — chống class imbalance pos/neg trên grid.
+- **Scale assignment**: max-side < 0.15 → P3 (small grid), < 0.45 → P4, else → P5. Dùng max-side thay area để chống lệch khi box dạng "thanh dài".
+
+## Head bias init (prior matching dataset)
+
+[head.py](head.py) init bias để output ban đầu khớp data statistics:
+
+| Slot | Bias | Decoded value | Ý nghĩa |
+|---|---|---|---|
+| `tx, ty` | 0 | `2·σ(0) − 0.5 = 0.5` | center của cell |
+| `tw, th` | -1.18 | `(2·σ(-1.18))² ≈ 0.22` | mean object size ~22% ảnh |
+| `obj` | -4.6 | `σ(-4.6) = 0.01` | negative prior |
+| `cls` | -log((1-p)/p) với p=1/num_classes | `1/num_classes` | uniform |
+
+Với init này, model có thể detect được object ở pretrained backbone mà không cần ép training quá nhiều.
+
+## Cấu trúc file
+
+| File | Mô tả |
+|------|-------|
+| `model.py` | `build_yolo()` — ghép backbone + neck + head, tự normalize ImageNet bên trong |
+| `backbone.py` | `ResNet34Backbone` (ImageNet pretrained) + `YOLOBackbone` (CSP from-scratch) |
+| `neck.py` | `YOLONeck` — FPN top-down |
+| `head.py` | `SingleScaleHead` + `YOLODetectionHead` — output 3 anchor × (5+C) channels |
+| `train.py` | Training loop với YOLOLoss |
+| `inference.py` | Inference script với NMS |
+| `config.yaml` | Cấu hình model, training, và inference (conf/iou thresholds) |
+
+## Cách chạy training
 
 ```bash
-# 1. Convert COCO JSON to YOLO .txt labels (one-time)
-python scripts/convert_coco_to_yolo.py \
-    --coco data/processed/annotations/train.json \
-    --images data/processed/images/train \
-    --output data/processed/annotations/yolo/train
+# Train (default mới: letterbox ON, augment ON, warmup+cosine, best checkpoint theo mAP)
+python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
+  --output weights/yolo.pt --device cuda
 
-# 2. Train
-python models/yolo/train.py \
-    --data data/processed \
-    --epochs 50 \
-    --batch-size 16 \
-    --output weights/yolo.pt
+# Tắt augmentation nếu muốn ablation
+python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
+  --no-augment --output weights/yolo.pt --device cuda
+
+# Tắt COCO-style eval nếu muốn train nhanh hơn
+python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
+  --no-use_coco_eval --output weights/yolo.pt --device cuda
+
+# Resume
+python models/yolo/train.py --resume weights/yolo.pt --epochs 20 --device cuda
 ```
 
-## Hyperparameters (see `config.yaml`)
+Checkpoints lưu ở `models/yolo/checkpoints/best_model.pt`, logs tensorboard ở `models/yolo/logs/`.
 
-| Param         | Value      |
-|---------------|------------|
-| Input size    | 640 x 640  |
-| Optimizer     | SGD (lr0 0.01, momentum 0.937, wd 5e-4) |
-| Epochs        | 50         |
-| Batch size    | 16         |
-| Mosaic aug    | enabled    |
-| Random seed   | 42         |
+## Re-cluster anchors theo dataset
 
-## Expected output
+```bash
+python scripts/cluster_yolo_anchors.py \
+  --ann_file data/annotations/train.json \
+  --img_size 640 --num_scales 3 --anchors_per_scale 3
+```
 
-- Best checkpoint: `weights/yolo.pt`
-- Ultralytics logs and curves under `runs/yolo/exp/`
-- Final test-set evaluation runs through `evaluation/evaluate.py` for COCO mAP
+Copy YAML snippet script in ra vào `models/yolo/config.yaml > model.anchors`.
+
+## Cách inference / visualize
+
+```bash
+python evaluation/test_and_visualize.py --model yolo \
+  --weights weights/yolo.pt \
+  --data data/images/test --output evaluation/results/yolo_vis \
+  --device cuda --conf-threshold 0.25 \
+  --show-gt --ann-file data/annotations/test.json
+```
+
+> `--conf-threshold 0.25` là default hợp lý. 0.05 sẽ cho rất nhiều false positives. 0.5 chỉ hợp lý khi model đã fine-tune kỹ.
+
+## Debug khi kết quả tệ
+
+Đọc [README chính phần "Debug / Sanity Check"](../../README.md#debug--sanity-check-yolo). Thứ tự:
+
+```bash
+# 1) Vẽ GT từ dataloader để verify dataset
+python scripts/visualize_dataset.py --data_root data --split train --num 12 --augment
+
+# 2) Inspect 1 batch
+python scripts/debug_one_batch.py --data_root data --device cuda
+
+# 3) Overfit 1 batch — pipeline phải học được đến loss < 0.5
+python scripts/overfit_one_batch.py --data_root data --steps 500 --lr 1e-3 --device cuda
+```
+
+Nếu overfit không xuống < 1.0 sau 500 steps → bug ở loss/model. Nếu overfit OK nhưng full train flat → undertrain hoặc data quá ít/noisy.
+
+## Convention dữ liệu
+
+- Dataset trả `boxes` ở **xyxy pixel trong frame 640×640 sau letterbox** (giữ tỉ lệ + pad center).
+- YOLOLoss tự normalize `/640` để có cxcywh ∈ [0,1].
+- Inference decode trả về bbox theo ảnh gốc bằng cách đảo ngược centered letterbox.
