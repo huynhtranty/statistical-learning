@@ -193,7 +193,10 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
 
         optimizer.zero_grad(set_to_none=True)
         losses.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+        
+        # Clipping nhieu muc de dam bao gradient on dinh
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         if not torch.isfinite(grad_norm):
             skipped_batches += 1
             print(f"[DETR][Warn] Non-finite grad norm at epoch={epoch}, batch={batch_idx}; skipping optimizer step.")
@@ -360,6 +363,7 @@ def main():
         num_classes=num_classes,
         matcher=matcher,
         weight_dict={"loss_ce": 1, "loss_bbox": 5, "loss_giou": 2},
+        eos_coef=0.5,  # Tang weight cho "no object" class (mac dinh 0.1) de xu ly class imbalance
         aux_loss=args.aux_loss,
     )
     criterion.to(device)

@@ -54,24 +54,38 @@ def generalized_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
     """
     iou = box_iou(boxes1, boxes2)
 
+    # Dam bao boxes hop le
+    boxes1 = boxes1.clamp(min=0.0)
+    boxes2 = boxes2.clamp(min=0.0)
+
     enclose_x1 = torch.min(boxes1[:, None, 0], boxes2[:, 0])
     enclose_y1 = torch.min(boxes1[:, None, 1], boxes2[:, 1])
     enclose_x2 = torch.max(boxes1[:, None, 2], boxes2[:, 2])
     enclose_y2 = torch.max(boxes1[:, None, 3], boxes2[:, 3])
 
-    enclose_area = (enclose_x2 - enclose_x1).clamp(min=0) * (enclose_y2 - enclose_y1).clamp(min=0)
+    # Clamp enclose_area de tranh chia cho 0
+    enclose_w = (enclose_x2 - enclose_x1).clamp(min=1e-7)
+    enclose_h = (enclose_y2 - enclose_y1).clamp(min=1e-7)
+    enclose_area = enclose_w * enclose_h
 
     area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
     area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    
     inter_x1 = torch.max(boxes1[:, None, 0], boxes2[:, 0])
     inter_y1 = torch.max(boxes1[:, None, 1], boxes2[:, 1])
     inter_x2 = torch.min(boxes1[:, None, 2], boxes2[:, 2])
     inter_y2 = torch.min(boxes1[:, None, 3], boxes2[:, 3])
-    inter_area = (inter_x2 - inter_x1).clamp(min=0) * (inter_y2 - inter_y1).clamp(min=0)
+    inter_w = (inter_x2 - inter_x1).clamp(min=0)
+    inter_h = (inter_y2 - inter_y1).clamp(min=0)
+    inter_area = inter_w * inter_h
+
     union_area = area1[:, None] + area2 - inter_area
 
-    giou = iou - (enclose_area - union_area) / (enclose_area + 1e-6)
-    return giou
+    # Tinh GIoU va clamp ngay tai day de dam bao gia tri hop le
+    giou = iou - (enclose_area - union_area) / enclose_area
+    
+    # CLAMP VOI KHOANG AN TOAN [-1, 1]
+    return giou.clamp(min=-1.0, max=1.0)
 
 
 def cxcywh_to_xyxy(boxes: Tensor) -> Tensor:

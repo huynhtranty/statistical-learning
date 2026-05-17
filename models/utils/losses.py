@@ -471,16 +471,20 @@ class SetCriterion(nn.Module):
 
         # Khi cả batch không có matched pair (mọi ảnh đều có 0 GT, hoặc Hungarian
         # trả về indices rỗng) thì L1/GIoU mean trên tensor rỗng = 0/0 = NaN.
-        # Trả về 0 (giữ graph nối với pred_boxes để autograd vẫn hợp lệ).
+        # Su dung new_zeros() de dam bao tensor co device/dtype phu hop.
         if src_boxes.numel() == 0:
-            zero = outputs["pred_boxes"].sum() * 0.0
-            return {"loss_bbox": zero, "loss_giou": zero}
+            return {
+                "loss_bbox": outputs["pred_boxes"].new_zeros(()),
+                "loss_giou": outputs["pred_boxes"].new_zeros(()),
+            }
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="mean")
-        giou = generalized_box_iou(
-            cxcywh_to_xyxy(src_boxes),
-            cxcywh_to_xyxy(target_boxes)
-        )
+        
+        # Dam bao boxes hop le truoc khi tinh GIoU
+        src_boxes_xyxy = cxcywh_to_xyxy(src_boxes).clamp(0.0, 1.0)
+        target_boxes_xyxy = cxcywh_to_xyxy(target_boxes).clamp(0.0, 1.0)
+        
+        giou = generalized_box_iou(src_boxes_xyxy, target_boxes_xyxy)
         giou_diag = torch.diag(giou)
         # Clamp to [-1, 1] range (GIoU can be -1 for completely non-overlapping boxes)
         loss_giou = (1.0 - giou_diag.clamp(-1.0, 1.0)).mean()

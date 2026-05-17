@@ -91,14 +91,14 @@ class HungarianMatcher(nn.Module):
         # L1 bounding box cost
         cost_bbox = torch.cdist(pred_boxes, tgt_boxes, p=1)
 
-        # GIoU cost
-        cost_giou = -generalized_box_iou(
+        # GIoU cost - CLAMP KET QUA de tranh NaN/Inf
+        giou_matrix = generalized_box_iou(
             cxcywh_to_xyxy(pred_boxes),
             cxcywh_to_xyxy(tgt_boxes),
         )
-
-        # Sanitize GIoU values: clamp to valid range [-1, 1] to prevent numerical issues
-        cost_giou = torch.clamp(cost_giou, min=-1.0, max=1.0)
+        # GIoU trong khoang [-1, 1], clamp them mot lan nua
+        giou_matrix = giou_matrix.clamp(min=-1.0, max=1.0)
+        cost_giou = -giou_matrix
 
         # Tổng hợp cost matrix
         cost_matrix = (

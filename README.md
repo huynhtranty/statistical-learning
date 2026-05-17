@@ -147,6 +147,14 @@ python models/yolo/train.py --data_root data --epochs 70 --batch_size 8 --output
 python models/detr/train.py --data_root data --epochs 70 --batch_size 8 --output weights/detr.pt --device cuda --augment
 ```
 
+```
+note:
+
+git add .
+git commit -m "fix"
+git push
+```
+
 > **Lưu ý**: vì 3 model đều pretrained nên 10–15 epochs đã cho kết quả khá tốt. Train từ scratch (`pretrained_*=False`) sẽ cần 100+ epochs.
 
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
