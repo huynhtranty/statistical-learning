@@ -67,7 +67,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=50,
                     help="Số epochs (mặc định: 50)")
     p.add_argument("--lr", type=float, default=1e-4,
-                    help="Learning rate (mặc định: 1e-4)")
+                    help="Learning rate cho transformer + head (mặc định: 1e-4)")
+    p.add_argument("--lr_backbone", type=float, default=1e-5,
+                    help="Learning rate cho backbone (mặc định: 1e-5, theo paper DETR)")
     p.add_argument("--num_queries", type=int, default=100,
                     help="Số object queries (mặc định: 100)")
     p.add_argument("--num_workers", type=int, default=4,
@@ -362,7 +364,28 @@ def main():
     )
     criterion.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Theo paper DETR: backbone dùng LR thấp hơn 10× transformer/head.
+    # Khi pretrained_coco=True, backbone = HF DetrConvEncoder/ResNet đã train chuẩn,
+    # chỉ cần fine-tune nhẹ — LR cao sẽ phá weights và gây gradient explosion → NaN.
+    # Phân group qua tên parameter: HF wrapper => "model.model.backbone.*", custom DETR => "backbone.*".
+    backbone_params, other_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if "backbone" in name:
+            backbone_params.append(p)
+        else:
+            other_params.append(p)
+    print(f"[DETR] Param groups: backbone={len(backbone_params)} tensors @ lr={args.lr_backbone}, "
+          f"transformer+head={len(other_params)} tensors @ lr={args.lr}")
+    optimizer = optim.AdamW(
+        [
+            {"params": backbone_params, "lr": args.lr_backbone},
+            {"params": other_params, "lr": args.lr},
+        ],
+        lr=args.lr,
+        weight_decay=1e-4,
+    )
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
     start_epoch = 0

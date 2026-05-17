@@ -469,6 +469,13 @@ class SetCriterion(nn.Module):
         src_boxes = outputs["pred_boxes"][idx]
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
+        # Khi cả batch không có matched pair (mọi ảnh đều có 0 GT, hoặc Hungarian
+        # trả về indices rỗng) thì L1/GIoU mean trên tensor rỗng = 0/0 = NaN.
+        # Trả về 0 (giữ graph nối với pred_boxes để autograd vẫn hợp lệ).
+        if src_boxes.numel() == 0:
+            zero = outputs["pred_boxes"].sum() * 0.0
+            return {"loss_bbox": zero, "loss_giou": zero}
+
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="mean")
         giou = generalized_box_iou(
             cxcywh_to_xyxy(src_boxes),
