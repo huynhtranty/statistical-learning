@@ -48,19 +48,33 @@ Với init này, model có thể detect được object ở pretrained backbone 
 ## Cách chạy training
 
 ```bash
-# Train (default: pretrained ResNet-34 backbone + augmentation tắt)
+# Train (default mới: letterbox ON, augment ON, warmup+cosine, best checkpoint theo mAP)
 python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
   --output weights/yolo.pt --device cuda
 
-# Train kèm augmentation (horizontal flip + color jitter)
+# Tắt augmentation nếu muốn ablation
 python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
-  --augment --output weights/yolo.pt --device cuda
+  --no-augment --output weights/yolo.pt --device cuda
+
+# Tắt COCO-style eval nếu muốn train nhanh hơn
+python models/yolo/train.py --data_root data --epochs 30 --batch_size 8 \
+  --no-use_coco_eval --output weights/yolo.pt --device cuda
 
 # Resume
 python models/yolo/train.py --resume weights/yolo.pt --epochs 20 --device cuda
 ```
 
 Checkpoints lưu ở `models/yolo/checkpoints/best_model.pt`, logs tensorboard ở `models/yolo/logs/`.
+
+## Re-cluster anchors theo dataset
+
+```bash
+python scripts/cluster_yolo_anchors.py \
+  --ann_file data/annotations/train.json \
+  --img_size 640 --num_scales 3 --anchors_per_scale 3
+```
+
+Copy YAML snippet script in ra vào `models/yolo/config.yaml > model.anchors`.
 
 ## Cách inference / visualize
 
@@ -93,6 +107,6 @@ Nếu overfit không xuống < 1.0 sau 500 steps → bug ở loss/model. Nếu o
 
 ## Convention dữ liệu
 
-- Dataset trả `boxes` ở **xyxy pixel trong ảnh đã resize 640×640**.
+- Dataset trả `boxes` ở **xyxy pixel trong frame 640×640 sau letterbox** (giữ tỉ lệ + pad center).
 - YOLOLoss tự normalize `/640` để có cxcywh ∈ [0,1].
-- Inference decode trả về **xywh trong ảnh GỐC** (sau khi divide scale_x/scale_y).
+- Inference decode trả về bbox theo ảnh gốc bằng cách đảo ngược centered letterbox.
