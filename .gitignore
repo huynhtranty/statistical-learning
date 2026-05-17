@@ -107,4 +107,5 @@ Desktop.ini
 *.tmp
 models/yolo/checkpoints/
 *.pt
+*.pdf
 .cursor/
