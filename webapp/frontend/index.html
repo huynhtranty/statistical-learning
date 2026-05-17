@@ -3,60 +3,1922 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Object Detection Demo</title>
+  <title>Object Detection — Vision Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { margin-bottom: 0.25rem; }
-    .sub { color: #666; margin-top: 0; }
-    form { margin: 1.5rem 0; padding: 1rem; border: 1px dashed #aaa; border-radius: 8px; }
-    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
-    pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
-    img { max-width: 100%; margin-top: 1rem; border-radius: 6px; }
+    :root {
+      --bg-0: #030214;
+      --bg-1: #08071c;
+      --ink: #d8d6ee;          /* dimmed off-white for comfortable reading */
+      --ink-dim: #9b99c4;
+      --ink-faint: #5e5c87;
+      --accent-1: #9a78dc;     /* desaturated violet */
+      --accent-2: #5cc5d8;     /* muted cyan */
+      --accent-3: #d76eb5;     /* muted magenta */
+      --accent-4: #cca960;     /* warm muted gold */
+      --danger: #d8627a;
+      --glass-bg: rgba(14, 12, 36, 0.55);
+      --glass-border: rgba(140, 130, 200, 0.12);
+      --glass-shadow:
+        0 30px 80px rgba(0, 0, 0, 0.65),
+        0 0 0 1px rgba(140, 130, 200, 0.04) inset,
+        0 0 40px rgba(140, 110, 200, 0.03) inset;
+      --radius-lg: 22px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: #020111;
+      color: var(--ink);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-weight: 400;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+    body { cursor: none; }
+    a, button, label.file-picker, input, summary { cursor: none; }
+
+    /* ── Three.js background ─────────────────────────────────────── */
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .vignette {
+      position: fixed; inset: 0;
+      background: radial-gradient(ellipse at center, transparent 25%, rgba(0,0,0,0.72) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .noise {
+      position: fixed; inset: -50%;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.04;
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    }
+
+    /* Mouse glow — soft, low-intensity */
+    .mouse-glow {
+      position: fixed;
+      width: 340px; height: 340px;
+      left: -170px; top: -170px;
+      pointer-events: none;
+      z-index: 1;
+      background: radial-gradient(circle, rgba(92,197,216,0.10), rgba(154,120,220,0.05) 35%, transparent 65%);
+      mix-blend-mode: screen;
+      transform: translate3d(0,0,0);
+      will-change: transform;
+    }
+    /* Targeting-reticle cursor — soft neon ring with a gentle core */
+    .cursor-dot {
+      position: fixed;
+      width: 24px; height: 24px;
+      left: -12px; top: -12px;
+      pointer-events: none;
+      z-index: 9999;
+      border-radius: 50%;
+      border: 1.5px solid rgba(92, 197, 216, 0.6);
+      box-shadow:
+        0 0 7px rgba(92, 197, 216, 0.3),
+        inset 0 0 6px rgba(92, 197, 216, 0.15);
+      transition: width 0.18s ease, height 0.18s ease, left 0.18s ease, top 0.18s ease, border-color 0.18s ease;
+      will-change: transform;
+    }
+    .cursor-dot::after {
+      content: "";
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 4px; height: 4px;
+      transform: translate(-50%, -50%);
+      background: rgba(220, 220, 240, 0.85);
+      border-radius: 50%;
+      box-shadow: 0 0 5px rgba(220,220,240,0.6), 0 0 9px rgba(92, 197, 216, 0.5);
+    }
+    .cursor-dot.over {
+      width: 36px; height: 36px;
+      left: -18px; top: -18px;
+      border-color: rgba(154, 120, 220, 0.75);
+      box-shadow: 0 0 10px rgba(154, 120, 220, 0.4),
+                  inset 0 0 9px rgba(154, 120, 220, 0.2);
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────── */
+    .app {
+      position: relative;
+      z-index: 2;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 5rem;
+    }
+    .app > * { opacity: 0; transform: translateY(14px); animation: rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+    .app > *:nth-child(1) { animation-delay: 0.05s; }   /* header */
+    .app > *:nth-child(2) { animation-delay: 0.18s; }   /* controls */
+    .app > *:nth-child(3) { animation-delay: 0.30s; }   /* workspace */
+    .app > *:nth-child(4) { animation-delay: 0.95s; }   /* footer (after sidebar stagger) */
+    .sidebar > * { opacity: 0; transform: translateY(10px); animation: rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+    .sidebar > *:nth-child(1) { animation-delay: 0.50s; }
+    .sidebar > *:nth-child(2) { animation-delay: 0.60s; }
+    .sidebar > *:nth-child(3) { animation-delay: 0.70s; }
+    .sidebar > *:nth-child(4) { animation-delay: 0.80s; }
+    @keyframes rise {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Workspace: 2-column on wide screens, stack on narrow ──── */
+    .workspace {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    @media (min-width: 1024px) {
+      .workspace {
+        grid-template-columns: minmax(0, 1fr) 340px;
+        align-items: start;
+      }
+    }
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-width: 0;
+    }
+    @media (min-width: 1024px) {
+      .sidebar { position: sticky; top: 1.5rem; }
+    }
+    /* Cards inside the workspace use grid gap, not their own margins */
+    .workspace .stage,
+    .workspace .status-row,
+    .workspace .chips,
+    .workspace details.raw,
+    .workspace .actions { margin-bottom: 0; }
+    /* Sidebar cards are tighter than the form-level cards */
+    .sidebar .status-row { padding: 0.7rem 1rem; font-size: 0.85rem; }
+    .sidebar .chips      { padding: 1rem; }
+    .sidebar details.raw { padding: 0.6rem 1rem; }
+    .sidebar details.raw pre { max-height: 220px; }
+
+    /* Stage drop-target state */
+    .stage.drag-over {
+      outline: 2px dashed rgba(154, 120, 220, 0.55);
+      outline-offset: -10px;
+      background-color: rgba(154, 120, 220, 0.04);
+    }
+    .stage.drag-over .stage-empty { color: var(--ink); }
+
+    /* Center the loaded image within the stage card */
+    .image-wrap { display: block; margin: 0 auto; }
+
+    /* Empty-state metadata line ("YOLO · 10 classes · …") */
+    .empty-meta {
+      margin-top: 0.4rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+
+    /* Threshold visible-count */
+    .thresh-count {
+      font-size: 0.78rem;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+      min-width: 5rem;
+    }
+
+    /* API health badge in the controls bar */
+    .api-badge {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      font-size: 0.72rem;
+      color: var(--ink-faint);
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      padding: 0.3rem 0.65rem;
+      border-radius: 999px;
+      border: 1px solid rgba(140, 130, 200, 0.10);
+      background: rgba(255,255,255,0.02);
+    }
+    .api-badge .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--ink-faint);
+      box-shadow: none;
+    }
+    .api-badge.ok    .dot { background: #4caf78; box-shadow: 0 0 8px rgba(76,175,120,0.45); }
+    .api-badge.error .dot { background: var(--danger); box-shadow: 0 0 8px rgba(216,98,122,0.45); }
+    .api-badge.busy  .dot { background: var(--accent-2); animation: pulse 1.6s ease-in-out infinite; }
+
+    /* Sidebar action buttons (Save image, etc.) */
+    .actions {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+      padding: 0.75rem;
+    }
+    .btn-ghost {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      padding: 0.55rem 0.95rem;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(154,120,220,0.18);
+      color: var(--ink);
+      border-radius: var(--radius-md);
+      transition: background 0.2s ease, border-color 0.2s ease, transform 0.18s ease;
+    }
+    .btn-ghost:hover {
+      background: rgba(154,120,220,0.10);
+      border-color: rgba(154,120,220,0.32);
+      transform: translateY(-1px);
+    }
+    .btn-ghost svg { width: 14px; height: 14px; }
+
+    header { text-align: center; margin-bottom: 2.5rem; }
+    .eyebrow {
+      letter-spacing: 0.4em;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--accent-2);
+      margin-bottom: 0.7rem;
+      text-shadow: 0 0 12px rgba(92, 197, 216, 0.25);
+    }
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: clamp(2rem, 5.2vw, 3.6rem);
+      letter-spacing: -0.02em;
+      margin: 0;
+      background: linear-gradient(110deg, var(--accent-1) 0%, var(--ink) 35%, var(--accent-2) 70%, var(--accent-3) 100%);
+      background-size: 250% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: shimmer 9s linear infinite;
+      filter: drop-shadow(0 4px 18px rgba(154, 120, 220, 0.12));
+    }
+    @keyframes shimmer {
+      0%   { background-position: 0% 50%; }
+      100% { background-position: 250% 50%; }
+    }
+    .sub {
+      color: var(--ink-dim);
+      margin: 0.8rem auto 0;
+      max-width: 560px;
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    /* ── Glass card ──────────────────────────────────────────────── */
+    .glass {
+      position: relative;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--glass-shadow);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border-radius: var(--radius-lg);
+    }
+    /* Subtle aurora gradient overlay on each glass card */
+    .glass::before {
+      content: "";
+      position: absolute; inset: 0;
+      border-radius: inherit;
+      background:
+        radial-gradient(120% 80% at 0% 0%, rgba(154,120,220,0.06), transparent 50%),
+        radial-gradient(120% 80% at 100% 100%, rgba(92,197,216,0.05), transparent 50%);
+      pointer-events: none;
+      mix-blend-mode: screen;
+    }
+
+    .controls {
+      padding: 1.25rem 1.5rem;
+      display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;
+      margin-bottom: 1.25rem;
+    }
+    .field { display: flex; align-items: center; gap: 0.6rem; }
+    .field label { font-size: 0.85rem; color: var(--ink-dim); }
+
+    /* Custom file picker */
+    .file-picker {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 0.6rem;
+      padding: 0.65rem 1rem;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, rgba(154,120,220,0.10), rgba(92,197,216,0.07));
+      border: 1px solid rgba(154,120,220,0.22);
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      font-size: 0.9rem;
+      color: var(--ink);
+    }
+    .file-picker:hover {
+      transform: translateY(-1px);
+      border-color: rgba(92,197,216,0.4);
+      box-shadow: 0 8px 22px rgba(92,197,216,0.12);
+    }
+    .file-picker input[type="file"] { position: absolute; inset: 0; opacity: 0; }
+    .file-picker .icon { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; }
+    .file-name {
+      color: var(--ink-faint);
+      font-size: 0.85rem;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Threshold slider */
+    .slider-wrap { display: flex; align-items: center; gap: 0.6rem; }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 140px;
+      height: 4px;
+      background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: rgba(225,220,240,0.95);
+      box-shadow: 0 0 0 3px rgba(154,120,220,0.22), 0 0 8px rgba(92,197,216,0.35);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 14px; height: 14px; border: none; border-radius: 50%;
+      background: rgba(225,220,240,0.95);
+      box-shadow: 0 0 0 3px rgba(154,120,220,0.22), 0 0 8px rgba(92,197,216,0.35);
+    }
+    .thresh-val {
+      font-variant-numeric: tabular-nums;
+      color: var(--accent-2);
+      min-width: 2.6rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    /* Primary button */
+    .btn-primary {
+      position: relative;
+      margin-left: auto;
+      padding: 0.7rem 1.4rem;
+      border-radius: 999px;
+      border: none;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 600;
+      font-size: 0.95rem;
+      letter-spacing: 0.02em;
+      color: #0a0820;
+      background: linear-gradient(135deg, var(--accent-2) 0%, var(--accent-1) 60%, var(--accent-3) 100%);
+      background-size: 200% 200%;
+      transition: transform 0.18s ease, box-shadow 0.25s ease, background-position 0.6s ease;
+      box-shadow: 0 10px 22px rgba(92,197,216,0.15), 0 0 0 1px rgba(255,255,255,0.06) inset;
+      overflow: visible;
+      isolation: isolate;
+    }
+    .btn-primary:hover:not([disabled]) {
+      transform: translateY(-1px);
+      background-position: 100% 0%;
+      box-shadow: 0 14px 30px rgba(154,120,220,0.2), 0 0 0 1px rgba(255,255,255,0.1) inset;
+    }
+    .btn-primary[disabled] { opacity: 0.7; filter: saturate(0.6); }
+    .btn-primary .spinner {
+      display: none;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(10,8,32,0.3);
+      border-top-color: #0a0820;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 0.4rem;
+      vertical-align: -2px;
+    }
+    .btn-primary.busy .spinner { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Shockwave on click */
+    .btn-primary .shockwave {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 10px; height: 10px;
+      margin-left: -5px; margin-top: -5px;
+      border-radius: 50%;
+      border: 2px solid var(--accent-2);
+      opacity: 0;
+      pointer-events: none;
+      z-index: -1;
+    }
+    .btn-primary.cast .shockwave { animation: shock 0.9s cubic-bezier(0.2, 0.7, 0.3, 1) forwards; }
+    .btn-primary.cast .shockwave.s2 { animation-delay: 0.15s; border-color: var(--accent-1); }
+    .btn-primary.cast .shockwave.s3 { animation-delay: 0.3s;  border-color: var(--accent-3); }
+    @keyframes shock {
+      0%   { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(28); border-width: 1px; }
+    }
+
+    /* ── Stage ───────────────────────────────────────────────────── */
+    .stage {
+      position: relative;
+      padding: 1.5rem;
+      margin-bottom: 1.25rem;
+      overflow: hidden;
+      min-height: 220px;
+      transform-style: preserve-3d;
+      transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .stage-empty {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 0.9rem;
+      padding: 4rem 1rem;
+      color: var(--ink-faint);
+    }
+    /* Empty-state iris (matches the wireframe Eye in the 3D scene) */
+    .stage-empty .iris {
+      position: relative;
+      width: 120px; height: 120px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(92,197,216,0.05), rgba(154,120,220,0.025) 60%, transparent 70%);
+      box-shadow: 0 0 50px rgba(92,197,216,0.12), 0 0 100px rgba(154,120,220,0.08);
+      animation: float 5s ease-in-out infinite;
+    }
+    .stage-empty .iris-ring {
+      position: absolute; inset: 0;
+      border-radius: 50%;
+      border-style: solid;
+      pointer-events: none;
+    }
+    .stage-empty .iris-ring-1 {
+      inset: 22px;
+      border-width: 1.5px;
+      border-color: rgba(92,197,216,0.7);
+      box-shadow: 0 0 10px rgba(92,197,216,0.35), inset 0 0 8px rgba(92,197,216,0.2);
+      animation: blink 5.5s ease-in-out infinite;
+    }
+    .stage-empty .iris-ring-2 {
+      inset: 36px;
+      border-width: 1px;
+      border-color: rgba(215,110,181,0.6);
+      box-shadow: 0 0 8px rgba(215,110,181,0.3);
+      animation: blink 5.5s ease-in-out infinite;
+    }
+    .stage-empty .iris-pupil {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 12px; height: 12px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: rgba(225, 220, 240, 0.9);
+      box-shadow: 0 0 10px rgba(225,220,240,0.55), 0 0 22px rgba(92,197,216,0.35);
+      animation: pupilJitter 4s ease-in-out infinite, blink 5.5s ease-in-out infinite;
+    }
+    .stage-empty .iris-orbit {
+      position: absolute; inset: -22px;
+      border-radius: 50%;
+      border: 1px dashed rgba(255,255,255,0.14);
+      animation: spin 22s linear infinite;
+    }
+    @keyframes float {
+      0%,100% { transform: translateY(0); }
+      50%     { transform: translateY(-10px); }
+    }
+    @keyframes pupilJitter {
+      0%,100% { transform: translate(-50%, -50%); }
+      25%     { transform: translate(calc(-50% + 3px), calc(-50% - 1px)); }
+      55%     { transform: translate(calc(-50% - 2px), calc(-50% + 2px)); }
+      80%     { transform: translate(calc(-50% + 1px), calc(-50% + 1px)); }
+    }
+    @keyframes blink {
+      0%, 96%, 100% { transform: scaleY(1); }
+      97%, 99%      { transform: scaleY(0.08); }
+    }
+    .stage-empty .iris-pupil { animation-name: pupilJitter, pupilBlink; }
+    @keyframes pupilBlink {
+      0%, 96%, 100% { opacity: 1; }
+      97%, 99%      { opacity: 0; }
+    }
+
+    .image-wrap {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 30px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(154,120,220,0.10);
+    }
+    .image-wrap img { display: block; max-width: 100%; max-height: 70vh; width: auto; height: auto; }
+    .image-wrap svg.overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+
+    /* Close button on the loaded image */
+    .image-close {
+      position: absolute;
+      top: 10px; right: 10px;
+      width: 34px; height: 34px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(10, 8, 30, 0.6);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      color: var(--ink);
+      z-index: 3;
+      opacity: 0.85;
+      transition: opacity 0.18s ease, background 0.18s ease,
+                  border-color 0.18s ease, transform 0.2s ease;
+    }
+    .image-close:hover {
+      opacity: 1;
+      background: rgba(216, 98, 122, 0.32);
+      border-color: rgba(216, 98, 122, 0.7);
+      transform: rotate(90deg);
+    }
+    .image-close:focus-visible {
+      outline: 2px solid rgba(154, 120, 220, 0.6);
+      outline-offset: 2px;
+    }
+    .image-close svg { width: 16px; height: 16px; }
+
+    /* Bounding-box reveal animation */
+    .overlay .det { transition: opacity 0.25s ease; }
+    .overlay.has-focus .det:not(.focus) { opacity: 0.25; }
+    .overlay.has-focus .det.focus { opacity: 1; }
+
+    .overlay .bbox {
+      fill: none;
+      stroke-width: 2.5;
+      stroke-linejoin: round;
+      stroke-dasharray: var(--len);
+      stroke-dashoffset: var(--len);
+      opacity: 0.85;
+      filter: drop-shadow(0 0 4px currentColor);
+      animation: draw 0.7s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+      animation-delay: var(--delay, 0s);
+    }
+    .overlay .det.focus .bbox {
+      stroke-width: 3.5;
+      opacity: 1;
+      filter: drop-shadow(0 0 8px currentColor) drop-shadow(0 0 14px currentColor);
+    }
+    .overlay .bbox-shadow {
+      fill: none;
+      stroke: rgba(0,0,0,0.5);
+      stroke-width: 5;
+      stroke-linejoin: round;
+      opacity: 0;
+      animation: fadeIn 0.4s ease forwards;
+      animation-delay: var(--delay, 0s);
+    }
+    .overlay .bbox-corners {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 3;
+      stroke-linecap: round;
+      opacity: 0;
+      animation: fadeIn 0.6s ease forwards;
+      animation-delay: calc(var(--delay, 0s) + 0.4s);
+      filter: drop-shadow(0 0 5px currentColor);
+    }
+    .overlay .bbox-label {
+      opacity: 0;
+      transform-box: fill-box;
+      transform-origin: left bottom;
+      animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+      animation-delay: calc(var(--delay, 0s) + 0.5s);
+    }
+    .overlay .bbox-label rect { filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)); }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    @keyframes fadeIn { to { opacity: 1; } }
+    @keyframes popIn {
+      0%   { opacity: 0; transform: translateY(-4px) scale(0.85); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Scan-line overlay during inference */
+    .scan-overlay {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .scan-overlay.active { opacity: 1; }
+    .scan-line {
+      position: absolute;
+      left: 0; right: 0; top: 0;
+      height: 100px;
+      background: linear-gradient(180deg,
+        transparent 0%,
+        rgba(92,197,216,0.03) 30%,
+        rgba(92,197,216,0.32) 50%,
+        rgba(154,120,220,0.38) 60%,
+        rgba(92,197,216,0.03) 80%,
+        transparent 100%);
+      filter: blur(0.5px);
+      mix-blend-mode: screen;
+      animation: scan 1.6s linear infinite;
+    }
+    .scan-grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(92,197,216,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(92,197,216,0.04) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mix-blend-mode: screen;
+      mask-image: linear-gradient(180deg, transparent, black 30%, black 70%, transparent);
+    }
+    .scan-corners {
+      position: absolute; inset: 12px;
+      pointer-events: none;
+    }
+    .scan-corners::before,
+    .scan-corners::after,
+    .scan-corners > span:first-child,
+    .scan-corners > span:last-child {
+      content: "";
+      position: absolute;
+      width: 22px; height: 22px;
+      border: 2px solid rgba(92,197,216,0.6);
+      filter: drop-shadow(0 0 4px rgba(92,197,216,0.45));
+    }
+    .scan-corners::before { top: 0; left: 0; border-right: none; border-bottom: none; }
+    .scan-corners::after  { top: 0; right: 0; border-left: none; border-bottom: none; }
+    .scan-corners > span:first-child { bottom: 0; left: 0; border-right: none; border-top: none; }
+    .scan-corners > span:last-child  { bottom: 0; right: 0; border-left: none; border-top: none; }
+
+    @keyframes scan {
+      0%   { transform: translateY(-100px); }
+      100% { transform: translateY(100%); }
+    }
+
+    /* ── Status pill ─────────────────────────────────────────────── */
+    .status-row {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.85rem 1.25rem;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+      color: var(--ink-dim);
+    }
+    .status-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--ink-faint);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .status-row.idle  .status-dot { background: var(--ink-faint); }
+    .status-row.busy  .status-dot { background: var(--accent-2); animation: pulse 1.6s ease-in-out infinite; }
+    .status-row.ok    .status-dot { background: #4caf78; box-shadow: 0 0 10px rgba(76,175,120,0.45); }
+    .status-row.error .status-dot { background: var(--danger); box-shadow: 0 0 10px rgba(216,98,122,0.45); }
+    .status-row.error { color: var(--danger); }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(92,197,216,0.35); }
+      50%     { box-shadow: 0 0 0 10px rgba(92,197,216,0); }
+    }
+
+    /* ── Detection chips ─────────────────────────────────────────── */
+    .chips {
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+      display: flex; flex-wrap: wrap; gap: 0.6rem;
+      min-height: 1.25rem;
+    }
+    .chip {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.4rem 0.85rem 0.4rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      color: var(--ink);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      animation: chipIn 0.5s ease backwards;
+      transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .chip:hover {
+      transform: translateY(-2px) scale(1.04);
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.2);
+      box-shadow: 0 8px 22px rgba(0,0,0,0.45), 0 0 10px var(--chip-glow, rgba(92,197,216,0.22));
+    }
+    .chip .swatch {
+      width: 10px; height: 10px; border-radius: 50%;
+      box-shadow: 0 0 10px currentColor;
+    }
+    .chip .conf { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+    @keyframes chipIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Raw JSON details ────────────────────────────────────────── */
+    details.raw { padding: 0.75rem 1.25rem; }
+    details.raw summary {
+      list-style: none;
+      color: var(--ink-dim);
+      font-size: 0.8rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      padding: 0.4rem 0;
+      user-select: none;
+    }
+    details.raw summary::-webkit-details-marker { display: none; }
+    details.raw summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 0.5rem;
+      transition: transform 0.2s ease;
+      color: var(--accent-2);
+    }
+    details.raw[open] summary::before { transform: rotate(90deg); }
+    pre {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.05);
+      padding: 1rem;
+      border-radius: var(--radius-sm);
+      max-height: 360px;
+      overflow: auto;
+      font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--ink-dim);
+      margin: 0.5rem 0 0;
+    }
+
+    footer {
+      text-align: center;
+      color: var(--ink-faint);
+      font-size: 0.78rem;
+      margin-top: 2rem;
+      letter-spacing: 0.08em;
+    }
+
+    @media (max-width: 640px) {
+      body { cursor: auto; }
+      .cursor-dot, .mouse-glow { display: none; }
+      .btn-primary { margin-left: 0; width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+    }
   </style>
 </head>
 <body>
-  <h1>Object Detection Demo</h1>
-  <p class="sub">Upload an image to run it through the trained detector.</p>
+  <canvas id="bg-canvas"></canvas>
+  <div class="vignette"></div>
+  <div class="noise"></div>
+  <div class="mouse-glow" id="mouse-glow"></div>
+  <div class="cursor-dot" id="cursor-dot"></div>
 
-  <form id="upload-form">
-    <input type="file" id="image-input" name="image" accept="image/*" required />
-    <button type="submit">Detect</button>
-  </form>
+  <main class="app">
+    <header>
+      <div class="eyebrow">Object Detection · Vision Lab</div>
+      <h1>See what the model sees.</h1>
+      <p class="sub">Upload an image. The detector scans it, traces every object it recognises, and tells you how sure it is.</p>
+    </header>
 
-  <div id="preview"></div>
-  <h3>Result</h3>
-  <pre id="result">Awaiting upload...</pre>
+    <form id="upload-form" class="glass controls">
+      <label class="file-picker">
+        <span class="icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </span>
+        <span>Choose image</span>
+        <input type="file" id="image-input" accept="image/*" required />
+      </label>
+      <span class="file-name" id="file-name">no file selected</span>
 
-  <script>
+      <div class="field slider-wrap">
+        <label for="min-conf">Min confidence</label>
+        <input type="range" id="min-conf" min="0" max="1" step="0.01" value="0.25" />
+        <span class="thresh-val" id="thresh-val">0.25</span>
+        <span class="thresh-count" id="thresh-count"></span>
+      </div>
+
+      <div class="api-badge" id="api-badge" title="Backend health">
+        <span class="dot"></span><span id="api-badge-text">API checking…</span>
+      </div>
+
+      <button type="submit" id="submit-btn" class="btn-primary">
+        <span class="shockwave"></span>
+        <span class="shockwave s2"></span>
+        <span class="shockwave s3"></span>
+        <span class="spinner"></span>Detect
+      </button>
+    </form>
+
+    <div class="workspace">
+      <section class="glass stage" id="stage">
+        <div class="stage-empty" id="stage-empty">
+          <div class="iris" aria-hidden="true">
+            <span class="iris-ring iris-ring-1"></span>
+            <span class="iris-ring iris-ring-2"></span>
+            <span class="iris-pupil"></span>
+            <span class="iris-orbit"></span>
+          </div>
+          <div>The detector is idle. Show it something.</div>
+          <div class="empty-meta">YOLO · 10 trained classes · drop an image or click <em>Choose image</em></div>
+        </div>
+        <div class="image-wrap" id="image-wrap" hidden>
+          <img id="image-el" alt="" />
+          <svg class="overlay" id="overlay" preserveAspectRatio="none"></svg>
+          <div class="scan-overlay" id="scan-overlay">
+            <div class="scan-grid"></div>
+            <div class="scan-line"></div>
+            <div class="scan-corners"><span></span><span></span></div>
+          </div>
+          <button type="button" class="image-close" id="image-close" title="Remove image (Esc)" aria-label="Remove image">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6"  x2="6"  y2="18"/>
+              <line x1="6"  y1="6"  x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="glass status-row idle" id="status">
+          <span class="status-dot"></span>
+          <span id="status-text">Drop in an image to begin.</span>
+        </div>
+
+        <section class="glass chips" id="chips" hidden></section>
+
+        <div class="glass actions" id="actions" hidden>
+          <button type="button" class="btn-ghost" id="save-btn" title="Download image with overlayed detections">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Save annotated image
+          </button>
+        </div>
+
+        <details class="glass raw" id="raw-wrap" hidden>
+          <summary>Raw JSON</summary>
+          <pre id="result">—</pre>
+        </details>
+      </aside>
+    </div>
+
+    <footer>FastAPI · Three.js · UnrealBloom · the YOLO checkpoint your teammates are training right now.</footer>
+  </main>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+    // ════════════════════════════════════════════════════════════════
+    // Three.js: nebula shader plane + particle fields + floating rune
+    //           + bloom post-processing + burst-on-detect emitter
+    // ════════════════════════════════════════════════════════════════
+    const SceneAPI = (() => {
+      const canvas = document.getElementById('bg-canvas');
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.78;
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x04031a, 0.00065);
+
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 5000);
+      camera.position.z = 800;
+
+      // ── Nebula shader plane (drifts behind everything) ──────────
+      const nebulaGeo = new THREE.PlaneGeometry(8000, 4500, 1, 1);
+      const nebulaMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        },
+        depthWrite: false,
+        depthTest: false,
+        transparent: true,
+        vertexShader: /* glsl */`
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: /* glsl */`
+          precision highp float;
+          varying vec2 vUv;
+          uniform float uTime;
+
+          // Hash + value noise
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+          }
+          float vnoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+          }
+          float fbm(vec2 p) {
+            float v = 0.0;
+            float a = 0.5;
+            for (int i = 0; i < 5; i++) {
+              v += a * vnoise(p);
+              p *= 2.07;
+              a *= 0.5;
+            }
+            return v;
+          }
+
+          void main() {
+            vec2 uv = vUv;
+            vec2 q = uv * 2.4;
+            q.x += uTime * 0.012;
+            q.y -= uTime * 0.008;
+
+            // Domain-warp the coordinates
+            vec2 warp = vec2(
+              fbm(q + vec2(0.0, 0.0)),
+              fbm(q + vec2(5.2, 1.3))
+            );
+            float n = fbm(q + warp * 1.6 - uTime * 0.015);
+
+            vec3 violet  = vec3(0.26, 0.07, 0.42);
+            vec3 cyan    = vec3(0.0,  0.36, 0.62);
+            vec3 magenta = vec3(0.62, 0.15, 0.46);
+            vec3 deep    = vec3(0.006, 0.003, 0.035);
+
+            vec3 col = mix(deep, violet, smoothstep(0.10, 0.55, n));
+            col = mix(col, cyan,    smoothstep(0.40, 0.75, n) * 0.75);
+            col = mix(col, magenta, smoothstep(0.65, 0.95, n) * 0.35);
+
+            // Soft vignette — deeper falloff so corners stay dark
+            float v = smoothstep(1.10, 0.18, length(uv - 0.5) * 1.35);
+            col *= v;
+
+            // Subtle sparkle (high-freq noise) — calmer
+            float sparkle = pow(vnoise(uv * 600.0 + uTime * 0.4), 24.0);
+            col += vec3(0.7, 0.78, 0.85) * sparkle * 0.35;
+
+            // Final overall dim for eye comfort
+            gl_FragColor = vec4(col * 0.62, 1.0);
+          }
+        `,
+      });
+      const nebula = new THREE.Mesh(nebulaGeo, nebulaMat);
+      nebula.position.z = -1800;
+      scene.add(nebula);
+
+      // ── Procedural particle sprite ──────────────────────────────
+      const spriteCanvas = document.createElement('canvas');
+      spriteCanvas.width = spriteCanvas.height = 128;
+      const sctx = spriteCanvas.getContext('2d');
+      const grad = sctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.25, 'rgba(255,255,255,0.7)');
+      grad.addColorStop(0.55, 'rgba(255,255,255,0.18)');
+      grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+      sctx.fillStyle = grad;
+      sctx.fillRect(0, 0, 128, 128);
+      const sprite = new THREE.CanvasTexture(spriteCanvas);
+
+      function makeField(count, color, size, spread) {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const velocities = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+          positions[i*3+0] = (Math.random() - 0.5) * spread;
+          positions[i*3+1] = (Math.random() - 0.5) * spread;
+          positions[i*3+2] = (Math.random() - 0.5) * spread * 0.6;
+          velocities[i] = 0.15 + Math.random() * 0.5;
+        }
+        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.PointsMaterial({
+          color, size, map: sprite,
+          transparent: true, depthWrite: false,
+          blending: THREE.AdditiveBlending, sizeAttenuation: true,
+        });
+        const points = new THREE.Points(geom, mat);
+        points.userData = { velocities };
+        return points;
+      }
+
+      const violet  = makeField(1000, 0x8a66cc, 6,  2400);
+      const cyan    = makeField(750,  0x33a8c2, 5,  2200);
+      const magenta = makeField(220,  0xcc4aa3, 10, 1800);
+      scene.add(violet, cyan, magenta);
+
+      // ── A pair of Eyes flanking the card column (left + right) ──
+      // Built via a factory so left + right share construction.
+      function createEye(xPos) {
+        const group = new THREE.Group();
+
+        const eyeball = new THREE.Mesh(
+          new THREE.SphereGeometry(110, 28, 18),
+          new THREE.MeshBasicMaterial({
+            color: 0x8a66cc,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.14,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        group.add(eyeball);
+
+        const iris = new THREE.Mesh(
+          new THREE.TorusGeometry(56, 2, 12, 96),
+          new THREE.MeshBasicMaterial({
+            color: 0x33a8c2,
+            transparent: true,
+            opacity: 0.6,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        iris.position.z = 96;
+        group.add(iris);
+
+        const irisInner = new THREE.Mesh(
+          new THREE.TorusGeometry(34, 1.1, 10, 80),
+          new THREE.MeshBasicMaterial({
+            color: 0xcc4aa3,
+            transparent: true,
+            opacity: 0.45,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        irisInner.position.z = 99;
+        group.add(irisInner);
+
+        // Pupil — small soft-bright sphere; bloom will halo it gently.
+        const pupil = new THREE.Mesh(
+          new THREE.SphereGeometry(11, 18, 18),
+          new THREE.MeshBasicMaterial({ color: 0xddd0f0 }),
+        );
+        pupil.position.z = 103;
+        group.add(pupil);
+
+        // Outer scanner rings — counter-rotate, pulse with breath.
+        const scannerRing1 = new THREE.Mesh(
+          new THREE.TorusGeometry(170, 0.7, 8, 128),
+          new THREE.MeshBasicMaterial({
+            color: 0x8a66cc,
+            transparent: true,
+            opacity: 0.16,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        const scannerRing2 = new THREE.Mesh(
+          new THREE.TorusGeometry(205, 0.5, 8, 128),
+          new THREE.MeshBasicMaterial({
+            color: 0x33a8c2,
+            transparent: true,
+            opacity: 0.12,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        group.add(scannerRing1, scannerRing2);
+
+        group.position.set(xPos, 0, -150);
+        scene.add(group);
+        return { group, eyeball, iris, irisInner, pupil, scannerRing1, scannerRing2 };
+      }
+
+      // ── Neural network (right side, complement to the Eye) ──────
+      function createNeuralNet(xPos) {
+        const group = new THREE.Group();
+
+        const layersCount  = [4, 6, 6, 3];
+        const layerSpacing = 65;
+        const nodeSpacing  = 42;
+        const nodeGeom = new THREE.SphereGeometry(5, 14, 12);
+
+        const layers = [];
+        for (let l = 0; l < layersCount.length; l++) {
+          const n = layersCount[l];
+          const layer = [];
+          for (let i = 0; i < n; i++) {
+            const x = (l - (layersCount.length - 1) / 2) * layerSpacing;
+            const y = (i - (n - 1) / 2) * nodeSpacing;
+            const sphere = new THREE.Mesh(
+              nodeGeom,
+              new THREE.MeshBasicMaterial({
+                color: 0x5cc5d8,
+                transparent: true,
+                opacity: 0.45,
+                blending: THREE.AdditiveBlending,
+              }),
+            );
+            sphere.position.set(x, y, 0);
+            group.add(sphere);
+            layer.push(sphere);
+          }
+          layers.push(layer);
+        }
+
+        // Fully-connected edges between consecutive layers
+        const edgeMat = new THREE.LineBasicMaterial({
+          color: 0x8a66cc,
+          transparent: true,
+          opacity: 0.12,
+          blending: THREE.AdditiveBlending,
+        });
+        for (let l = 0; l < layers.length - 1; l++) {
+          for (const a of layers[l]) {
+            for (const b of layers[l + 1]) {
+              const geom = new THREE.BufferGeometry().setFromPoints([a.position, b.position]);
+              group.add(new THREE.Line(geom, edgeMat));
+            }
+          }
+        }
+
+        // Subtle outer wireframe cube — frames the model as a single entity
+        const wireBox = new THREE.LineSegments(
+          new THREE.WireframeGeometry(new THREE.BoxGeometry(300, 290, 100)),
+          new THREE.LineBasicMaterial({
+            color: 0x8a66cc,
+            transparent: true,
+            opacity: 0.10,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        group.add(wireBox);
+
+        // "Traveler" — a small bright sphere that rides the signal path
+        const traveler = new THREE.Mesh(
+          new THREE.SphereGeometry(4.5, 14, 14),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }),
+        );
+        group.add(traveler);
+
+        group.position.set(xPos, 0, -150);
+        scene.add(group);
+
+        return {
+          group, layers, wireBox, traveler,
+          signal: { timer: 1.5 + Math.random() * 2, path: null, progress: 0, duration: 1.5 },
+        };
+      }
+
+      const leftEye = createEye(-820);
+      const network = createNeuralNet(820);
+
+      // ── Ambient detection cloud: wireframe bboxes drifting in 3D ──
+      const detectionCloud = new THREE.Group();
+      const bboxes = [];
+      const bboxColors = [0x8a66cc, 0x33a8c2, 0xcc4aa3, 0xbf9a4d];
+      for (let i = 0; i < 12; i++) {
+        const w = 70 + Math.random() * 180;
+        const h = 50 + Math.random() * 140;
+        const d = 70 + Math.random() * 140;
+        const wf = new THREE.WireframeGeometry(new THREE.BoxGeometry(w, h, d));
+        const line = new THREE.LineSegments(
+          wf,
+          new THREE.LineBasicMaterial({
+            color: bboxColors[i % bboxColors.length],
+            transparent: true,
+            opacity: 0.10,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        line.position.set(
+          (Math.random() - 0.5) * 2600,
+          (Math.random() - 0.5) * 1500,
+          -700 - Math.random() * 1500,
+        );
+        line.userData = {
+          rx: (Math.random() - 0.5) * 0.4,
+          ry: (Math.random() - 0.5) * 0.4,
+          rz: (Math.random() - 0.5) * 0.2,
+          drift: 6 + Math.random() * 18,
+        };
+        bboxes.push(line);
+        detectionCloud.add(line);
+      }
+      scene.add(detectionCloud);
+
+      // ── Burst emitter (created on demand when results arrive) ───
+      const bursts = [];   // active short-lived particle systems
+      function emitBurst(worldPos, count = 220) {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const vel = new Float32Array(count * 3);
+        const life = new Float32Array(count);
+        const seed = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+          positions[i*3+0] = worldPos.x;
+          positions[i*3+1] = worldPos.y;
+          positions[i*3+2] = worldPos.z;
+          // Random direction in a slightly flattened sphere
+          const theta = Math.random() * Math.PI * 2;
+          const phi   = (Math.random() - 0.5) * 0.8;
+          const speed = 180 + Math.random() * 220;
+          vel[i*3+0] = Math.cos(theta) * Math.cos(phi) * speed;
+          vel[i*3+1] = Math.sin(phi) * speed * 0.6;
+          vel[i*3+2] = Math.sin(theta) * Math.cos(phi) * speed;
+          life[i] = 1.0;
+          seed[i] = Math.random();
+        }
+        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const colorChoice = [0x00e5ff, 0xb388ff, 0xff4dcd, 0xffd166][Math.floor(Math.random() * 4)];
+        const mat = new THREE.PointsMaterial({
+          color: colorChoice,
+          size: 12,
+          map: sprite,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+          opacity: 1.0,
+        });
+        const pts = new THREE.Points(geom, mat);
+        pts.userData = { vel, life, seed, age: 0, maxAge: 1.8 };
+        scene.add(pts);
+        bursts.push(pts);
+      }
+
+      // ── Mouse parallax ──────────────────────────────────────────
+      const target = { x: 0, y: 0 };
+      window.addEventListener('pointermove', (e) => {
+        target.x = (e.clientX / window.innerWidth - 0.5) * 90;
+        target.y = -(e.clientY / window.innerHeight - 0.5) * 90;
+      });
+
+      // ── Bloom post-processing ───────────────────────────────────
+      const composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      const bloom = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        0.5,    // strength  (was 0.85 — comfortable halos, not blowout)
+        0.6,    // radius
+        0.3,    // threshold (was 0.18 — only the brightest pixels bloom)
+      );
+      composer.addPass(bloom);
+      composer.addPass(new OutputPass());
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+        nebulaMat.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+      });
+
+      const clock = new THREE.Clock();
+      function animate() {
+        const dt = Math.min(clock.getDelta(), 0.05);
+        const t = clock.elapsedTime;
+        nebulaMat.uniforms.uTime.value = t;
+
+        for (const layer of [violet, cyan, magenta]) {
+          const pos = layer.geometry.attributes.position.array;
+          const vel = layer.userData.velocities;
+          for (let i = 0; i < vel.length; i++) {
+            pos[i*3+2] += vel[i] * dt * 30;
+            if (pos[i*3+2] > 800) {
+              pos[i*3+0] = (Math.random() - 0.5) * 2400;
+              pos[i*3+1] = (Math.random() - 0.5) * 2400;
+              pos[i*3+2] = -1200;
+            }
+          }
+          layer.geometry.attributes.position.needsUpdate = true;
+          layer.rotation.z = t * 0.01;
+        }
+        violet.rotation.y  =  t * 0.018;
+        cyan.rotation.y    = -t * 0.014;
+
+        // ── Eye (left side): tracks cursor, blinks, scanner rings pulse ──
+        const breath = 1.0 + Math.sin(t * 1.2) * 0.04;
+        const blink = t % 5.5;
+        const blinking = blink < 0.18;
+        const blinkScale = blinking ? Math.max(0.05, Math.abs(Math.sin(blink / 0.18 * Math.PI))) : 1.0;
+        leftEye.group.lookAt(target.x * 9, target.y * 9, 800);
+        leftEye.pupil.position.x = Math.sin(t * 0.7) * 2.2 + Math.cos(t * 3.1) * 0.6;
+        leftEye.pupil.position.y = Math.cos(t * 0.55) * 2.0;
+        leftEye.scannerRing1.rotation.z =  t * 0.32;
+        leftEye.scannerRing2.rotation.z = -t * 0.21;
+        leftEye.scannerRing1.scale.setScalar(breath);
+        leftEye.scannerRing2.scale.setScalar(1.0 / breath);
+        leftEye.eyeball.rotation.y = t * 0.05;
+        leftEye.eyeball.scale.y = blinkScale;
+        leftEye.iris.scale.y = blinkScale;
+        leftEye.irisInner.scale.y = blinkScale;
+        leftEye.pupil.visible = blinkScale > 0.35;
+
+        // ── Neural network (right side): gentle drift + signal propagation ──
+        network.group.rotation.y = Math.sin(t * 0.18) * 0.3;
+        network.wireBox.rotation.x = t * 0.05;
+        network.wireBox.rotation.z = t * 0.04;
+        // Base node pulse — calm
+        for (let l = 0; l < network.layers.length; l++) {
+          for (let i = 0; i < network.layers[l].length; i++) {
+            const phase = l * 0.5 + i * 0.3;
+            network.layers[l][i].material.opacity = 0.38 + Math.sin(t * 1.5 + phase) * 0.07;
+            network.layers[l][i].scale.setScalar(1);
+          }
+        }
+        // Periodic forward-pass signal
+        const sig = network.signal;
+        sig.timer -= dt;
+        if (sig.timer <= 0 && !sig.path) {
+          sig.path = network.layers.map(layer => Math.floor(Math.random() * layer.length));
+          sig.progress = 0;
+          sig.duration = 1.4;
+        }
+        if (sig.path) {
+          sig.progress += dt;
+          const k = sig.progress / sig.duration;
+          if (k >= 1) {
+            sig.path = null;
+            sig.timer = 1.8 + Math.random() * 2.5;
+            network.traveler.material.opacity = 0;
+          } else {
+            // Light up each path node when the signal reaches it
+            const last = sig.path.length - 1;
+            for (let i = 0; i <= last; i++) {
+              const tNode = i / last;
+              const fade = Math.max(0, 1 - Math.abs(k - tNode) * 4);
+              if (fade > 0) {
+                const node = network.layers[i][sig.path[i]];
+                node.material.opacity = Math.min(1.0, 0.4 + fade * 1.1);
+                node.scale.setScalar(1 + fade * 0.9);
+              }
+            }
+            // Traveler rides between consecutive path nodes
+            const fSeg = k * last;
+            const segIdx = Math.min(Math.floor(fSeg), last - 1);
+            const fIn = fSeg - segIdx;
+            const from = network.layers[segIdx][sig.path[segIdx]].position;
+            const to   = network.layers[segIdx + 1][sig.path[segIdx + 1]].position;
+            network.traveler.position.lerpVectors(from, to, fIn);
+            network.traveler.material.opacity = 0.9;
+          }
+        }
+
+        // Drifting wireframe bbox cloud
+        for (const b of bboxes) {
+          b.rotation.x += b.userData.rx * dt;
+          b.rotation.y += b.userData.ry * dt;
+          b.rotation.z += b.userData.rz * dt;
+          b.position.z += b.userData.drift * dt;
+          if (b.position.z > 500) {
+            b.position.x = (Math.random() - 0.5) * 2600;
+            b.position.y = (Math.random() - 0.5) * 1500;
+            b.position.z = -1900;
+          }
+        }
+
+        // Bursts
+        for (let b = bursts.length - 1; b >= 0; b--) {
+          const pts = bursts[b];
+          pts.userData.age += dt;
+          const k = pts.userData.age / pts.userData.maxAge;
+          const pos = pts.geometry.attributes.position.array;
+          const vel = pts.userData.vel;
+          const seed = pts.userData.seed;
+          for (let i = 0; i < seed.length; i++) {
+            // Decelerate over time
+            const drag = Math.max(0, 1.0 - k);
+            pos[i*3+0] += vel[i*3+0] * dt * drag;
+            pos[i*3+1] += vel[i*3+1] * dt * drag + Math.sin(t * 2.0 + seed[i] * 10) * 4 * dt;
+            pos[i*3+2] += vel[i*3+2] * dt * drag;
+          }
+          pts.geometry.attributes.position.needsUpdate = true;
+          pts.material.opacity = Math.max(0, 1.0 - k);
+          pts.material.size = 12 * (1.0 + k * 1.5);
+          if (k >= 1.0) {
+            scene.remove(pts);
+            pts.geometry.dispose();
+            pts.material.dispose();
+            bursts.splice(b, 1);
+          }
+        }
+
+        camera.position.x += (target.x - camera.position.x) * 0.04;
+        camera.position.y += (target.y - camera.position.y) * 0.04;
+        camera.lookAt(0, 0, 0);
+
+        composer.render();
+        requestAnimationFrame(animate);
+      }
+      animate();
+
+      return { emitBurst };
+    })();
+
+    // ════════════════════════════════════════════════════════════════
+    // Mouse glow + custom cursor dot
+    // ════════════════════════════════════════════════════════════════
+    (() => {
+      const glow = document.getElementById('mouse-glow');
+      const dot  = document.getElementById('cursor-dot');
+      let tx = innerWidth / 2, ty = innerHeight / 2;
+      let gx = tx, gy = ty;
+      let dx = tx, dy = ty;
+      window.addEventListener('pointermove', (e) => {
+        tx = e.clientX; ty = e.clientY;
+        dx = e.clientX; dy = e.clientY;
+      });
+      // Highlight cursor when hovering interactive elements
+      const interactiveSel = 'button, a, label, input[type="file"], input[type="range"], summary, .chip';
+      document.addEventListener('mouseover', (e) => {
+        if (e.target.closest && e.target.closest(interactiveSel)) dot.classList.add('over');
+      }, true);
+      document.addEventListener('mouseout', (e) => {
+        if (e.target.closest && e.target.closest(interactiveSel)) dot.classList.remove('over');
+      }, true);
+      function tick() {
+        gx += (tx - gx) * 0.12;
+        gy += (ty - gy) * 0.12;
+        glow.style.transform = `translate3d(${gx}px, ${gy}px, 0)`;
+        dot.style.transform  = `translate3d(${dx}px, ${dy}px, 0)`;
+        requestAnimationFrame(tick);
+      }
+      tick();
+    })();
+
+    // ════════════════════════════════════════════════════════════════
+    // Stage card subtle 3D tilt
+    // ════════════════════════════════════════════════════════════════
+    (() => {
+      const stage = document.getElementById('stage');
+      let rx = 0, ry = 0, trx = 0, try_ = 0;
+      stage.addEventListener('pointermove', (e) => {
+        const r = stage.getBoundingClientRect();
+        const px = (e.clientX - r.left) / r.width - 0.5;
+        const py = (e.clientY - r.top)  / r.height - 0.5;
+        trx = -py * 6;
+        try_ =  px * 6;
+      });
+      stage.addEventListener('pointerleave', () => { trx = 0; try_ = 0; });
+      function tick() {
+        rx += (trx - rx) * 0.08;
+        ry += (try_ - ry) * 0.08;
+        stage.style.transform = `perspective(1200px) rotateX(${rx}deg) rotateY(${ry}deg)`;
+        requestAnimationFrame(tick);
+      }
+      tick();
+    })();
+
+    // ════════════════════════════════════════════════════════════════
+    // Detection app
+    // ════════════════════════════════════════════════════════════════
     const API = "http://localhost:8000/predict";
-    const form = document.getElementById("upload-form");
-    const input = document.getElementById("image-input");
-    const result = document.getElementById("result");
-    const preview = document.getElementById("preview");
+    const PALETTE = [
+      "#d76eb5", "#5cc5d8", "#9a78dc", "#cca960",
+      "#5ab896", "#d78080", "#7fc7d4", "#c79cc4",
+    ];
+    const colorFor = (cid) => PALETTE[((cid % PALETTE.length) + PALETTE.length) % PALETTE.length];
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const file = input.files[0];
-      if (!file) return;
+    const form        = document.getElementById('upload-form');
+    const fileInput   = document.getElementById('image-input');
+    const fileNameEl  = document.getElementById('file-name');
+    const minConf     = document.getElementById('min-conf');
+    const threshVal   = document.getElementById('thresh-val');
+    const submitBtn   = document.getElementById('submit-btn');
+    const statusRow   = document.getElementById('status');
+    const statusText  = document.getElementById('status-text');
+    const stageEl     = document.getElementById('stage');
+    const stageEmpty  = document.getElementById('stage-empty');
+    const imageWrap   = document.getElementById('image-wrap');
+    const imageEl     = document.getElementById('image-el');
+    const overlay     = document.getElementById('overlay');
+    const scanOverlay = document.getElementById('scan-overlay');
+    const chipsEl     = document.getElementById('chips');
+    const rawWrap     = document.getElementById('raw-wrap');
+    const resultEl    = document.getElementById('result');
+    const threshCount = document.getElementById('thresh-count');
+    const apiBadge    = document.getElementById('api-badge');
+    const apiBadgeTxt = document.getElementById('api-badge-text');
+    const actionsEl   = document.getElementById('actions');
+    const saveBtn     = document.getElementById('save-btn');
+    const imageClose  = document.getElementById('image-close');
 
-      preview.innerHTML = "";
-      const img = document.createElement("img");
-      img.src = URL.createObjectURL(file);
-      preview.appendChild(img);
+    let currentImageDims = null;
+    let currentDetections = [];
 
-      result.textContent = "Running inference...";
-      const fd = new FormData();
-      fd.append("image", file);
+    function setStatus(text, kind = 'idle') {
+      statusText.textContent = text;
+      statusRow.className = `glass status-row ${kind}`;
+    }
+    function loadImageFromFile(file) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Could not load image"));
+        img.src = URL.createObjectURL(file);
+      });
+    }
+    function clearOverlay() {
+      overlay.classList.remove('has-focus');
+      while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+    }
+    function showImage(img) {
+      stageEmpty.hidden = true;
+      imageWrap.hidden = false;
+      imageEl.src = img.src;
+      imageEl.width  = img.naturalWidth;
+      imageEl.height = img.naturalHeight;
+      currentImageDims = { w: img.naturalWidth, h: img.naturalHeight };
+      overlay.setAttribute('viewBox', `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+      clearOverlay();
+    }
 
-      try {
-        const res = await fetch(API, { method: "POST", body: fd });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        result.textContent = JSON.stringify(json, null, 2);
-      } catch (err) {
-        result.textContent = `Error: ${err.message}`;
+    function renderDetections(detections, threshold) {
+      clearOverlay();
+      const visible = detections.filter(d => d.confidence >= threshold);
+
+      visible.forEach((det, idx) => {
+        const [x, y, w, h] = det.bbox;
+        const color = colorFor(det.class_id);
+        const delay = idx * 0.06;
+        const perimeter = 2 * (w + h);
+
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('class', 'det');
+        g.setAttribute('data-idx', idx);
+
+        const shadow = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        shadow.setAttribute('class', 'bbox-shadow');
+        shadow.setAttribute('x', x); shadow.setAttribute('y', y);
+        shadow.setAttribute('width', w); shadow.setAttribute('height', h);
+        shadow.setAttribute('rx', 4);
+        shadow.style.setProperty('--delay', `${delay}s`);
+        g.appendChild(shadow);
+
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('class', 'bbox');
+        rect.setAttribute('x', x); rect.setAttribute('y', y);
+        rect.setAttribute('width', w); rect.setAttribute('height', h);
+        rect.setAttribute('rx', 4);
+        rect.setAttribute('stroke', color);
+        rect.style.color = color;
+        rect.style.setProperty('--len', `${perimeter}`);
+        rect.style.setProperty('--delay', `${delay}s`);
+        g.appendChild(rect);
+
+        // Corner brackets for that scanner-HUD feel
+        const cornerLen = Math.min(w, h) * 0.18;
+        const cornerPath = [
+          `M ${x} ${y + cornerLen} L ${x} ${y} L ${x + cornerLen} ${y}`,
+          `M ${x + w - cornerLen} ${y} L ${x + w} ${y} L ${x + w} ${y + cornerLen}`,
+          `M ${x} ${y + h - cornerLen} L ${x} ${y + h} L ${x + cornerLen} ${y + h}`,
+          `M ${x + w - cornerLen} ${y + h} L ${x + w} ${y + h} L ${x + w} ${y + h - cornerLen}`,
+        ].join(' ');
+        const corners = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        corners.setAttribute('class', 'bbox-corners');
+        corners.setAttribute('d', cornerPath);
+        corners.style.color = color;
+        corners.style.setProperty('--delay', `${delay}s`);
+        g.appendChild(corners);
+
+        // Label
+        const labelText = `${det.class}  ${(det.confidence * 100).toFixed(0)}%`;
+        const labelFontSize = Math.max(14, Math.min(currentImageDims.w, currentImageDims.h) * 0.025);
+        const padX = labelFontSize * 0.6;
+        const padY = labelFontSize * 0.35;
+        const approxW = labelText.length * labelFontSize * 0.55 + padX * 2;
+        const labelH = labelFontSize + padY * 2;
+        const labelY = Math.max(0, y - labelH);
+
+        const lg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        lg.setAttribute('class', 'bbox-label');
+        lg.style.setProperty('--delay', `${delay}s`);
+
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bg.setAttribute('x', x);
+        bg.setAttribute('y', labelY);
+        bg.setAttribute('width', approxW);
+        bg.setAttribute('height', labelH);
+        bg.setAttribute('rx', labelH / 2);
+        bg.setAttribute('fill', color);
+        lg.appendChild(bg);
+
+        const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        txt.setAttribute('x', x + padX);
+        txt.setAttribute('y', labelY + labelH - padY - labelFontSize * 0.15);
+        txt.setAttribute('fill', '#0a0820');
+        txt.setAttribute('font-family', "'Space Grotesk', sans-serif");
+        txt.setAttribute('font-weight', '600');
+        txt.setAttribute('font-size', labelFontSize);
+        txt.textContent = labelText;
+        lg.appendChild(txt);
+
+        g.appendChild(lg);
+        overlay.appendChild(g);
+      });
+
+      renderChips(visible);
+    }
+
+    function renderChips(visible) {
+      chipsEl.innerHTML = '';
+      if (!visible.length) {
+        chipsEl.hidden = true;
+        return;
+      }
+      chipsEl.hidden = false;
+
+      // Map visible index → overlay group so chips can spotlight bboxes
+      const sortable = visible.map((d, i) => ({ d, i }));
+      sortable.sort((a, b) => b.d.confidence - a.d.confidence);
+
+      sortable.forEach(({ d, i }, sortedIdx) => {
+        const color = colorFor(d.class_id);
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.style.animationDelay = `${sortedIdx * 50}ms`;
+        chip.style.setProperty('--chip-glow', color + '88');
+        chip.dataset.idx = i;
+        chip.innerHTML = `
+          <span class="swatch" style="background:${color}; color:${color}"></span>
+          <span>${d.class}</span>
+          <span class="conf">${(d.confidence * 100).toFixed(1)}%</span>
+        `;
+        chip.addEventListener('pointerenter', () => focusDet(i));
+        chip.addEventListener('pointerleave', clearFocus);
+        chip.addEventListener('focus', () => focusDet(i));
+        chip.addEventListener('blur', clearFocus);
+        chip.tabIndex = 0;
+        chipsEl.appendChild(chip);
+      });
+    }
+
+    function focusDet(idx) {
+      overlay.classList.add('has-focus');
+      overlay.querySelectorAll('.det').forEach(el => {
+        el.classList.toggle('focus', el.dataset.idx == String(idx));
+      });
+    }
+    function clearFocus() {
+      overlay.classList.remove('has-focus');
+      overlay.querySelectorAll('.det.focus').forEach(el => el.classList.remove('focus'));
+    }
+
+    function updateThreshCount() {
+      if (!currentDetections.length) {
+        threshCount.textContent = '';
+        return;
+      }
+      const t = parseFloat(minConf.value);
+      const visible = currentDetections.filter(d => d.confidence >= t).length;
+      threshCount.textContent = `${visible}/${currentDetections.length} shown`;
+    }
+
+    minConf.addEventListener('input', () => {
+      threshVal.textContent = parseFloat(minConf.value).toFixed(2);
+      updateThreshCount();
+      if (currentImageDims) {
+        renderDetections(currentDetections, parseFloat(minConf.value));
       }
     });
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      fileNameEl.textContent = file.name;
+      const img = await loadImageFromFile(file);
+      showImage(img);
+      currentDetections = [];
+      chipsEl.hidden = true;
+      rawWrap.hidden = true;
+      actionsEl.hidden = true;
+      updateThreshCount();
+      setStatus('Image loaded. Click Detect to run inference.', 'idle');
+    });
+
+    function castShockwave() {
+      submitBtn.classList.add('cast');
+      setTimeout(() => submitBtn.classList.remove('cast'), 1300);
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = fileInput.files[0];
+      if (!file) {
+        setStatus('Choose an image first.', 'error');
+        return;
+      }
+      if (!currentImageDims) {
+        const img = await loadImageFromFile(file);
+        showImage(img);
+      }
+
+      castShockwave();
+      submitBtn.disabled = true;
+      submitBtn.classList.add('busy');
+      scanOverlay.classList.add('active');
+      setStatus('Running inference…', 'busy');
+
+      const fd = new FormData();
+      fd.append('image', file);
+
+      try {
+        const res = await fetch(API, { method: 'POST', body: fd });
+        const json = await res.json();
+        if (!res.ok) {
+          const detail = json && json.detail ? json.detail : `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        currentDetections = json.detections || [];
+        renderDetections(currentDetections, parseFloat(minConf.value));
+        updateThreshCount();
+        resultEl.textContent = JSON.stringify(json, null, 2);
+        rawWrap.hidden = false;
+        actionsEl.hidden = currentDetections.length === 0;
+        const above = currentDetections.filter(d => d.confidence >= parseFloat(minConf.value)).length;
+        setStatus(
+          `Model: ${json.model} · ${currentDetections.length} raw detection${currentDetections.length === 1 ? '' : 's'}, ${above} above threshold.`,
+          'ok',
+        );
+        // Magical burst from the center of the image stage, projected into world space
+        triggerBurst();
+      } catch (err) {
+        resultEl.textContent = `Error: ${err.message}`;
+        rawWrap.hidden = false;
+        setStatus(err.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('busy');
+        scanOverlay.classList.remove('active');
+      }
+    });
+
+    function triggerBurst() {
+      const rect = imageWrap.getBoundingClientRect();
+      // Map screen center of the image stage into approximate world coords.
+      // The scene camera lookAt(0,0,0) at z=800 with FOV=60 gives ~ ymax = tan(30°)*800 ≈ 462 at z=0.
+      const screenCx = rect.left + rect.width / 2;
+      const screenCy = rect.top  + rect.height / 2;
+      const nx = (screenCx / window.innerWidth)  * 2 - 1;
+      const ny = -((screenCy / window.innerHeight) * 2 - 1);
+      const fov60HalfTan = Math.tan(30 * Math.PI / 180);
+      const planeY = fov60HalfTan * 800;
+      const planeX = planeY * (window.innerWidth / window.innerHeight);
+      SceneAPI.emitBurst({ x: nx * planeX, y: ny * planeY, z: 0 }, 240);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Clear the loaded image (close button + Esc shortcut)
+    // ════════════════════════════════════════════════════════════════
+    function clearImage() {
+      if (!currentImageDims) return;
+      imageWrap.hidden = true;
+      stageEmpty.hidden = false;
+      imageEl.removeAttribute('src');
+      clearOverlay();
+      currentImageDims = null;
+      currentDetections = [];
+      chipsEl.hidden = true;
+      actionsEl.hidden = true;
+      rawWrap.hidden = true;
+      rawWrap.open = false;
+      resultEl.textContent = '—';
+      fileInput.value = '';
+      fileNameEl.textContent = 'no file selected';
+      threshCount.textContent = '';
+      scanOverlay.classList.remove('active');
+      setStatus('Drop in an image to begin.', 'idle');
+    }
+    imageClose.addEventListener('click', clearImage);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && currentImageDims) {
+        clearImage();
+      }
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    // Drag-and-drop onto the stage
+    // ════════════════════════════════════════════════════════════════
+    ['dragenter', 'dragover'].forEach(name => {
+      stageEl.addEventListener(name, e => {
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+        e.preventDefault();
+        stageEl.classList.add('drag-over');
+      });
+    });
+    stageEl.addEventListener('dragleave', e => {
+      // Only clear if we're actually leaving the stage element entirely
+      if (e.relatedTarget && stageEl.contains(e.relatedTarget)) return;
+      stageEl.classList.remove('drag-over');
+    });
+    stageEl.addEventListener('drop', async e => {
+      e.preventDefault();
+      stageEl.classList.remove('drag-over');
+      const f = e.dataTransfer?.files?.[0];
+      if (!f || !f.type.startsWith('image/')) return;
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      fileInput.files = dt.files;
+      fileInput.dispatchEvent(new Event('change'));
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    // Save annotated image (compose img + bboxes onto a canvas, download)
+    // ════════════════════════════════════════════════════════════════
+    saveBtn.addEventListener('click', () => {
+      if (!currentImageDims || !currentDetections.length) return;
+      const c = document.createElement('canvas');
+      c.width = currentImageDims.w;
+      c.height = currentImageDims.h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(imageEl, 0, 0);
+
+      const threshold = parseFloat(minConf.value);
+      const visible = currentDetections.filter(d => d.confidence >= threshold);
+      const fontSize = Math.max(14, Math.min(c.width, c.height) * 0.025);
+      ctx.font = `600 ${fontSize}px "Space Grotesk", system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      const baseW = Math.max(2, Math.min(c.width, c.height) * 0.004);
+
+      for (const d of visible) {
+        const color = colorFor(d.class_id);
+        const [x, y, w, h] = d.bbox;
+
+        // Shadow stroke for legibility
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = baseW + 2;
+        ctx.strokeRect(x, y, w, h);
+        // Color stroke
+        ctx.strokeStyle = color;
+        ctx.lineWidth = baseW;
+        ctx.strokeRect(x, y, w, h);
+
+        // Pill-shaped label
+        const label = `${d.class} ${(d.confidence * 100).toFixed(0)}%`;
+        const tm = ctx.measureText(label);
+        const padX = fontSize * 0.55;
+        const padY = fontSize * 0.3;
+        const labelW = tm.width + padX * 2;
+        const labelH = fontSize + padY * 2;
+        const labelY = Math.max(0, y - labelH);
+        const r = labelH / 2;
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x + r, labelY);
+        ctx.lineTo(x + labelW - r, labelY);
+        ctx.arc(x + labelW - r, labelY + r, r, -Math.PI / 2, Math.PI / 2);
+        ctx.lineTo(x + r, labelY + labelH);
+        ctx.arc(x + r, labelY + r, r, Math.PI / 2, 3 * Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#0a0820';
+        ctx.fillText(label, x + padX, labelY + padY);
+      }
+
+      c.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const base = (fileInput.files[0]?.name || 'image').replace(/\.[^.]+$/, '');
+        a.download = `${base}-detections.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    // Backend health probe
+    // ════════════════════════════════════════════════════════════════
+    async function checkHealth() {
+      apiBadge.className = 'api-badge busy';
+      apiBadgeTxt.textContent = 'API checking…';
+      try {
+        const res = await fetch('http://localhost:8000/health', { method: 'GET' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        apiBadge.className = 'api-badge ok';
+        apiBadgeTxt.textContent = 'API ready';
+      } catch {
+        apiBadge.className = 'api-badge error';
+        apiBadgeTxt.textContent = 'API offline';
+      }
+    }
+    checkHealth();
+    apiBadge.style.cursor = 'pointer';
+    apiBadge.addEventListener('click', checkHealth);
   </script>
 </body>
 </html>
