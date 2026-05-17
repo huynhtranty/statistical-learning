@@ -292,7 +292,7 @@ python evaluation/test_and_visualize.py \
 
 python evaluation/test_and_visualize.py --model faster_rcnn --weights weights/faster_rcnn.pt --data data/images/test --output evaluation/results/faster_rcnn_vis --device cuda --conf-threshold 0.5 --show-gt --ann-file data/annotations/test.json --max-images 10
 python evaluation/test_and_visualize.py --model yolo        --weights weights/yolo.pt        --data data/images/test --output evaluation/results/yolo_vis        --device cuda --conf-threshold 0.05 --show-gt --ann-file data/annotations/test.json --max-images 10
-python evaluation/test_and_visualize.py --model detr        --weights weights/detr.pt        --data data/images/test --output evaluation/results/detr_vis        --device cuda --conf-threshold 0.5 --show-gt --ann-file data/annotations/test.json --max-images 10
+python evaluation/test_and_visualize.py --model detr        --weights weights/detr.pt        --data data/images/test --output evaluation/results/detr_vis        --device cuda --conf-threshold 0.5 --ann-file data/annotations/test.json --max-images 10
 
 
 # Với model khác
