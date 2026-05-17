@@ -12,6 +12,37 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torchvision.models import resnet34, ResNet34_Weights
+
+
+class ResNet34Backbone(nn.Module):
+    """Backbone YOLO dùng ResNet-34 pretrained ImageNet.
+
+    Trích feature map từ layer2/layer3/layer4 → P3/P4/P5 với stride 8/16/32.
+    Số kênh output là (128, 256, 512) — khớp với neck mặc định, không cần
+    sửa downstream.
+    """
+
+    def __init__(self, pretrained: bool = True) -> None:
+        super().__init__()
+        weights = ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
+        rn = resnet34(weights=weights)
+        # Stem: conv1 + bn1 + relu + maxpool → stride 4
+        self.stem = nn.Sequential(rn.conv1, rn.bn1, rn.relu, rn.maxpool)
+        self.layer1 = rn.layer1   # stride 4, 64 ch
+        self.layer2 = rn.layer2   # stride 8, 128 ch  → P3
+        self.layer3 = rn.layer3   # stride 16, 256 ch → P4
+        self.layer4 = rn.layer4   # stride 32, 512 ch → P5
+
+        self.out_channels = (128, 256, 512)
+
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        x = self.stem(x)
+        x = self.layer1(x)
+        p3 = self.layer2(x)
+        p4 = self.layer3(p3)
+        p5 = self.layer4(p4)
+        return p3, p4, p5
 
 
 class ConvBnSiLU(nn.Module):

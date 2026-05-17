@@ -47,6 +47,25 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Pretrained weights
+
+Cả 3 model đều sử dụng pretrained để fine-tune (không train từ đầu):
+
+| Model | Pretrained source | Triggered automatically |
+|---|---|---|
+| **Faster R-CNN** | torchvision `fasterrcnn_resnet50_fpn` COCO detector | Khi `build_faster_rcnn(pretrained=True)` (default) |
+| **DETR** | HuggingFace `facebook/detr-resnet-50` COCO detector | Khi `build_detr(pretrained_coco=True)` (default) |
+| **YOLO** (custom) | torchvision `resnet34` ImageNet backbone | Khi `build_yolo(pretrained_backbone=True)` (default) |
+
+Weights được tự động tải về khi build model lần đầu (cached ở `~/.cache/torch/hub/checkpoints/` và `~/.cache/huggingface/`).
+
+Nếu gặp lỗi `SSL: CERTIFICATE_VERIFY_FAILED` trên macOS:
+```bash
+/Applications/Python\ 3.13/Install\ Certificates.command
+```
+
+DETR cần thêm `timm` (cài tự động qua `requirements.txt`, nếu thiếu chạy: `pip install timm`).
+
 ## GPU Cloud Setup
 
 If you're training on a remote GPU cloud server and need to transfer results back to your local machine.
@@ -115,20 +134,58 @@ print(f"Current GPU: {torch.cuda.get_device_name(0)}")
 
 ## Train
 
-Each model has its own training entrypoint and config. All accept the same CLI flags.
+Mỗi model có training entrypoint riêng. Tất cả đều load pretrained mặc định và fine-tune trên dataset.
 
 ```bash
-# Faster R-CNN
-python models/faster_rcnn/train.py --data data --epochs 50 --batch_size 8 --output weights/faster_rcnn.pth --device cuda
+# Faster R-CNN — load COCO detector, replace box predictor cho 11 class (10 + bg)
+python models/faster_rcnn/train.py --data_root data --epochs 70 --batch_size 8 --output weights/faster_rcnn.pt --device cuda
 
-# YOLO
-python models/yolo/train.py --data data --epochs 50 --batch_size 8 --output weights/yolo.pt --device cuda
+# YOLO custom — backbone ResNet-34 ImageNet pretrained, neck + head random
+python models/yolo/train.py --data_root data --epochs 70 --batch_size 8 --output weights/yolo.pt --device cuda --augment
 
-# DETR
-python models/detr/train.py --data data --epochs 50 --batch_size 8 --output weights/detr.pth --device cuda
+# DETR — load HuggingFace facebook/detr-resnet-50 COCO detector, replace class head
+python models/detr/train.py --data_root data --epochs 70 --batch_size 8 --output weights/detr.pt --device cuda --augment
 ```
 
+```
+note:
+
+git add .
+git commit -m "fix"
+git push
+```
+
+> **Lưu ý**: vì 3 model đều pretrained nên 10–15 epochs đã cho kết quả khá tốt. Train từ scratch (`pretrained_*=False`) sẽ cần 100+ epochs.
+
 Per-model details: [models/faster_rcnn/README.md](models/faster_rcnn/README.md), [models/yolo/README.md](models/yolo/README.md), [models/detr/README.md](models/detr/README.md).
+
+## Debug / Sanity Check (YOLO)
+
+Khi YOLO ra detection sai (bbox lệch, class sai, conf thấp), chạy 3 scripts dưới đây theo thứ tự để cô lập bug:
+
+| Script | Khi nào dùng | Healthy signal |
+|---|---|---|
+| `scripts/visualize_dataset.py` | Đầu tiên — verify GT từ DataLoader đúng | Bbox phải nằm đúng object trên ảnh |
+| `scripts/debug_one_batch.py` | Sau khi GT đúng — kiểm tra forward + gradient | Images [0,1], obj prior ≈ 0.01, tw grad > 0.001 |
+| `scripts/overfit_one_batch.py` | Cuối cùng — verify model + loss học được | Loss giảm < 0.5 sau ~500 steps |
+
+```bash
+# 1) Vẽ GT từ dataloader (kèm augmentation)
+python scripts/visualize_dataset.py --data_root data --split train --output /tmp/gt_check --num 12 --augment
+
+# 2) Inspect 1 batch (untrained or với checkpoint)
+python scripts/debug_one_batch.py --data_root data --device cuda
+python scripts/debug_one_batch.py --data_root data --weights weights/yolo.pt --device cuda
+
+# 3) Overfit 1 batch để xác nhận pipeline học được
+python scripts/overfit_one_batch.py --data_root data --batch_size 2 \
+  --steps 500 --lr 1e-3 --device cuda
+```
+
+**Nếu**:
+- GT vẽ sai vị trí → bug ở dataset/resize/augment.
+- GT đúng nhưng overfit loss kẹt > 1.0 → bug ở loss/model.
+- Overfit OK nhưng full train val_loss flat → underfit, cần thêm epochs/data.
 
 ## Evaluate
 
@@ -240,6 +297,11 @@ python evaluation/test_and_visualize.py \
     --device cuda \
     --num-classes 10 \
     --max-images 10
+
+python evaluation/test_and_visualize.py --model faster_rcnn --weights weights/faster_rcnn.pt --data data/images/test --output evaluation/results/faster_rcnn_vis --device cuda --conf-threshold 0.5 --show-gt --ann-file data/annotations/test.json --max-images 10
+python evaluation/test_and_visualize.py --model yolo        --weights weights/yolo.pt        --data data/images/test --output evaluation/results/yolo_vis        --device cuda --conf-threshold 0.05 --show-gt --ann-file data/annotations/test.json --max-images 10
+python evaluation/test_and_visualize.py --model detr        --weights weights/detr.pt        --data data/images/test --output evaluation/results/detr_vis        --device cuda --conf-threshold 0.5 --ann-file data/annotations/test.json --max-images 10
+
 
 # Với model khác
 python evaluation/test_and_visualize.py --model faster_rcnn --weights weights/faster_rcnn.pth --data data/images/test --output evaluation/results/vis_frcnn --device cuda --num-classes 10

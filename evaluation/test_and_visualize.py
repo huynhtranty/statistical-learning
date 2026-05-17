@@ -3,21 +3,22 @@
 Evaluation script that runs inference and saves images with drawn bounding boxes + class names.
 
 Usage:
+    # Auto-read config from model config.yaml
     python evaluation/test_and_visualize.py \
         --model faster_rcnn \
         --weights weights/faster_rcnn.pt \
         --data data/images/test \
         --output evaluation/results/test_vis \
-        --device cuda \
-        --conf-threshold 0.5 \
-        --show-gt
+        --device cuda
 
+    # Override config values
     python evaluation/test_and_visualize.py \
         --model yolo \
         --weights models/yolo/checkpoints/best_model.pt \
         --data data/images/test \
         --output evaluation/results/test_vis \
-        --device cuda
+        --device cuda \
+        --conf-threshold 0.3
 """
 
 import argparse
@@ -29,6 +30,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 from PIL import Image
 
 
@@ -36,6 +38,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.utils.coco_dataset import get_class_names, DEFAULT_CLASSES
+from models.utils.losses import DEFAULT_YOLO_ANCHORS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config loading
+# ─────────────────────────────────────────────────────────────────────────────
+def load_model_config(model_type: str) -> dict:
+    """Load config.yaml for the specified model type."""
+    config_path = PROJECT_ROOT / "models" / model_type / "config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    return {}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Color palette: one color per class (BGR for OpenCV)
@@ -89,6 +105,9 @@ def draw_boxes(
 
     for i, (box, label) in enumerate(zip(boxes, labels)):
         x, y, w, h = box
+        # Filter NaN/Inf values
+        if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(w) or not np.isfinite(h):
+            continue
         x1, y1 = int(x), int(y)
         x2, y2 = int(x + w), int(y + h)
 
@@ -144,28 +163,43 @@ def draw_boxes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_model(model_type: str, weights_path: str, device: str, num_classes: int = 10) -> nn.Module:
+    """Load custom-built models (ImageNet pretrained backbone, head trained on our dataset)."""
     if model_type == "faster_rcnn":
-        from torchvision.models.detection import (
-            fasterrcnn_resnet50_fpn_v2,
-            FasterRCNN_ResNet50_FPN_V2_Weights,
-        )
-        model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+        from models.faster_rcnn.model import build_faster_rcnn
+        # num_classes + 1 (cộng background). pretrained=False vì load từ checkpoint của ta.
+        model = build_faster_rcnn(num_classes=num_classes + 1, pretrained=False)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     elif model_type == "yolo":
         from models.yolo.model import build_yolo
-        model = build_yolo(num_classes=num_classes)
+        # backbone weights đã có trong checkpoint → tránh download lại pretrained.
+        model = build_yolo(num_classes=num_classes, pretrained_backbone=False)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
 
     elif model_type == "detr":
-        from torchvision.models.detection import detr_resnet50, DetrResNet50_Weights
-        model = detr_resnet50(weights=DetrResNet50_Weights.DEFAULT)
+        from models.detr.model import build_detr
+        # HF wrapper: cấu trúc tự load từ HF hub khi build, sau đó load checkpoint của ta.
+        model = build_detr(num_classes=num_classes, pretrained_coco=True)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = checkpoint["model_state_dict"]
+
+        # Guard: báo lỗi rõ ràng nếu checkpoint đã diverge (NaN/Inf) thay vì chạy ra "không detect gì".
+        bad_keys = []
+        for key, value in state_dict.items():
+            if torch.is_tensor(value) and (not torch.isfinite(value).all()):
+                bad_keys.append(key)
+                if len(bad_keys) >= 5:
+                    break
+        if bad_keys:
+            raise ValueError(
+                "DETR checkpoint contains NaN/Inf parameters; inference would be invalid. "
+                f"First invalid tensors: {bad_keys}. Please retrain or use a clean checkpoint."
+            )
+
+        model.load_state_dict(state_dict)
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -199,35 +233,61 @@ def preprocess_image_pil(image_path: Path, input_size: int = 640) -> tuple:
 
 
 def _nms(boxes: list, scores: list, labels: list,
-          iou_threshold: float = 0.45) -> tuple[list, list, list]:
-    """Simple per-class NMS."""
+          iou_threshold: float = 0.45,
+          class_agnostic_iou: float = 0.7,
+          top_k: int | None = None,
+          min_area_frac: float = 0.0,
+          img_wh: tuple[int, int] | None = None) -> tuple[list, list, list]:
+    """Per-class NMS + class-agnostic NMS + top-K + min-area cleanup.
+
+    Untrained / under-trained YOLO heads spray many spatially-distinct
+    low-confidence boxes — per-class NMS alone leaves them all because they
+    don't overlap. Layering a class-agnostic NMS (higher IoU) collapses
+    cross-class duplicates, then top-K caps output so the rendered image
+    stays readable.
+    """
     if not boxes:
         return [], [], []
 
-    # Group by class
-    from collections import defaultdict
-    by_class = defaultdict(list)
-    for b, s, l in zip(boxes, scores, labels):
-        by_class[l].append((b, s))
+    import torch
+    import torchvision.ops
 
-    nms_boxes, nms_scores, nms_labels = [], [], []
-    for cls_id, items in by_class.items():
-        # Sort by score
-        items = sorted(items, key=lambda x: x[1], reverse=True)
-        keep = []
-        while items:
-            best = items.pop(0)
-            keep.append(best)
-            items = [
-                (b, s) for b, s in items
-                if _box_iou(best[0], b) < iou_threshold
-            ]
-        for b, s in keep:
-            nms_boxes.append(b)
-            nms_scores.append(s)
-            nms_labels.append(cls_id)
+    # Drop tiny boxes (visual noise from grid-cell predictions)
+    if min_area_frac > 0 and img_wh is not None:
+        img_w, img_h = img_wh
+        min_area = float(img_w) * float(img_h) * min_area_frac
+        kept = [(b, s, l) for b, s, l in zip(boxes, scores, labels)
+                if b[2] * b[3] >= min_area]
+        if not kept:
+            return [], [], []
+        boxes = [k[0] for k in kept]
+        scores = [k[1] for k in kept]
+        labels = [k[2] for k in kept]
 
-    return nms_boxes, nms_scores, nms_labels
+    boxes_t = torch.tensor(boxes, dtype=torch.float32)
+    scores_t = torch.tensor(scores, dtype=torch.float32)
+    labels_t = torch.tensor(labels, dtype=torch.long)
+    xyxy = torch.stack(
+        (boxes_t[:, 0], boxes_t[:, 1],
+         boxes_t[:, 0] + boxes_t[:, 2],
+         boxes_t[:, 1] + boxes_t[:, 3]),
+        dim=1,
+    )
+
+    keep = torchvision.ops.batched_nms(xyxy, scores_t, labels_t, iou_threshold)
+
+    if class_agnostic_iou is not None and class_agnostic_iou > 0 and keep.numel() > 1:
+        keep2 = torchvision.ops.nms(xyxy[keep], scores_t[keep], class_agnostic_iou)
+        keep = keep[keep2]
+
+    # batched_nms returns sorted-by-score; top-K cap keeps the strongest.
+    if top_k is not None and keep.numel() > top_k:
+        keep = keep[:top_k]
+
+    idx_list = keep.tolist()
+    return ([boxes[i] for i in idx_list],
+            [scores[i] for i in idx_list],
+            [labels[i] for i in idx_list])
 
 
 def _box_iou(a: list, b: list) -> float:
@@ -267,11 +327,17 @@ def _decode_yolo_single_scale(
 
     # Reshape to (A, 5+C, H, W)
     pred = pred.view(num_anchors, 5 + num_classes, H, W)
+    scale_idx = int(round(np.log2(input_size / max(int(H), 1)))) - 3
+    scale_idx = max(0, min(scale_idx, len(DEFAULT_YOLO_ANCHORS) - 1))
+    anchors = torch.tensor(DEFAULT_YOLO_ANCHORS[scale_idx], dtype=pred.dtype, device=pred.device)
 
-    tx = pred[:, 0, :, :].sigmoid()  # (A, H, W)
-    ty = pred[:, 1, :, :].sigmoid()
-    tw = pred[:, 2, :, :]            # NO sigmoid - raw log-scale
-    th = pred[:, 3, :, :]            # NO sigmoid - raw log-scale
+    # YOLOv5 parameterization:
+    #   pred_xy = 2*sigmoid(t) - 0.5  ∈ [-0.5, 1.5]   (offset trong cell, hỗ trợ neighbor)
+    #   pred_wh = (2*sigmoid(t))^2    ∈ [0, 4]        (fraction of image normalized)
+    tx = 2.0 * pred[:, 0, :, :].sigmoid() - 0.5
+    ty = 2.0 * pred[:, 1, :, :].sigmoid() - 0.5
+    tw = (2.0 * pred[:, 2, :, :].sigmoid()).pow(2) * anchors[:, 0].view(num_anchors, 1, 1)
+    th = (2.0 * pred[:, 3, :, :].sigmoid()).pow(2) * anchors[:, 1].view(num_anchors, 1, 1)
     obj = pred[:, 4, :, :].sigmoid()
     cls = pred[:, 5:, :, :].sigmoid()  # (A, C, H, W)
 
@@ -296,11 +362,12 @@ def _decode_yolo_single_scale(
 
     boxes, scores, labels = [], [], []
     for k in range(len(sel_score)):
+        # xy: offset trong cell × stride → pixel position trong input 640
         xc_in = (cx_grid[k] + float(sel_tx[k])) * stride_x
         yc_in = (cy_grid[k] + float(sel_ty[k])) * stride_y
-        # tw/th are log-scale → exp to get actual scale factor
-        bw_in = float(np.exp(np.clip(sel_tw[k], -4, 4))) * stride_x
-        bh_in = float(np.exp(np.clip(sel_th[k], -4, 4))) * stride_y
+        # wh: fraction of image × input_size
+        bw_in = float(sel_tw[k]) * input_size
+        bh_in = float(sel_th[k]) * input_size
 
         x1_in = xc_in - bw_in / 2
         y1_in = yc_in - bh_in / 2
@@ -332,6 +399,8 @@ def run_predictions(
     device: str,
     input_size: int = 640,
     conf_threshold: float = 0.5,
+    top_k: int | None = 30,
+    min_area_frac: float = 0.001,
 ) -> tuple[list, list, list]:
     """Run model on one image and return (boxes, labels, scores) in pixel coords."""
     pil_img, orig_size, tensor, scales, pad_x, pad_y = preprocess_image_pil(
@@ -351,6 +420,10 @@ def run_predictions(
             for bx, sc, lb in zip(boxes_xyxy, scores, labels):
                 if sc < conf_threshold:
                     continue
+                # Faster R-CNN trả label 1..N (0 = background) → đổi về 0..N-1 cho class_names.
+                lb_idx = int(lb) - 1
+                if lb_idx < 0:
+                    continue
                 x1, y1, x2, y2 = bx
                 x1 = (x1 - pad_x) / scale_x
                 y1 = (y1 - pad_y) / scale_y
@@ -364,38 +437,63 @@ def run_predictions(
                 if w <= 0 or h <= 0:
                     continue
                 result_boxes.append([x1, y1, w, h])
-                result_labels.append(int(lb))
+                result_labels.append(lb_idx)
                 result_scores.append(float(sc))
 
         elif model_type == "yolo":
+            # Import decode function from train.py to use same decode logic
+            from models.yolo.train import decode_predictions as yolo_decode
+            from models.yolo.train import nms as yolo_nms
+
             # YOLO returns list of 3 tensors at different scales (P3,P4,P5)
             predictions_list = model(tensor.unsqueeze(0).to(device))
             if not isinstance(predictions_list, list):
                 predictions_list = [predictions_list]
 
-            # Số class lấy từ shape output để decode đúng (3 anchors/cell).
+            # Số class lấy từ shape output
             ch = predictions_list[0].shape[1]
-            num_classes = ch // 3 - 5
+            num_classes_decode = ch // 3 - 5
 
+            # Use same decode as train.py
+            decoded = yolo_decode(
+                predictions_list,
+                conf_threshold=conf_threshold,
+                num_classes=num_classes_decode,
+                img_size=input_size,
+            )
+
+            # Convert to draw format [x, y, w, h] and apply NMS
             all_boxes, all_scores, all_labels = [], [], []
-            for scale_idx, pred in enumerate(predictions_list):
-                b, s, l = _decode_yolo_single_scale(
-                    pred, orig_w, orig_h,
-                    scale_x, scale_y, pad_x, pad_y,
-                    input_size, conf_threshold,
-                    num_classes=num_classes, num_anchors=3,
-                )
-                all_boxes.extend(b)
-                all_scores.extend(s)
-                all_labels.extend(l)
+            for preds in decoded:
+                for p in preds:
+                    bbox = p['bbox']  # [x1, y1, x2, y2]
+                    x = (bbox[0] - pad_x) / scale_x
+                    y = (bbox[1] - pad_y) / scale_y
+                    w = (bbox[2] - bbox[0]) / scale_x
+                    h = (bbox[3] - bbox[1]) / scale_y
+                    x = max(0.0, min(x, orig_w))
+                    y = max(0.0, min(y, orig_h))
+                    w = min(w, orig_w - x)
+                    h = min(h, orig_h - y)
+                    if w > 0 and h > 0:
+                        all_boxes.append([x, y, w, h])
+                        all_scores.append(p['score'])
+                        all_labels.append(p['class'])
 
-            # NMS across all scales
+            # Per-class NMS + class-agnostic NMS + top-K + min-area cleanup
+            # to keep visualisation readable even with an under-trained model.
             result_boxes, result_scores, result_labels = _nms(
-                all_boxes, all_scores, all_labels
+                all_boxes, all_scores, all_labels,
+                iou_threshold=0.45,
+                class_agnostic_iou=0.7,
+                top_k=top_k,
+                min_area_frac=min_area_frac,
+                img_wh=(orig_w, orig_h),
             )
 
         elif model_type == "detr":
-            output = model([tensor.to(device)])
+            # Custom DETR takes a 4D tensor (B, 3, H, W).
+            output = model(tensor.unsqueeze(0).to(device))
             probas = output["pred_logits"].softmax(-1)
             boxes_norm = output["pred_boxes"].cpu().numpy()
 
@@ -405,17 +503,23 @@ def run_predictions(
                 if scores.item() < conf_threshold:
                     continue
                 cx, cy, bw, bh = box
+                # Filter NaN values
+                if not np.isfinite(cx) or not np.isfinite(cy) or not np.isfinite(bw) or not np.isfinite(bh):
+                    continue
                 x = (cx - bw / 2) * orig_w
                 y = (cy - bh / 2) * orig_h
                 w = bw * orig_w
                 h = bh * orig_h
+                # Filter NaN from math operations
+                if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(w) or not np.isfinite(h):
+                    continue
                 x = max(0, min(x, orig_w))
                 y = max(0, min(y, orig_h))
                 w = min(w, orig_w - x)
                 h = min(h, orig_h - y)
                 if w <= 0 or h <= 0:
                     continue
-                result_boxes.append([x, y, w, h])
+                result_boxes.append([float(x), float(y), float(w), float(h)])
                 result_labels.append(int(labels.item()))
                 result_scores.append(float(scores.item()))
 
@@ -445,10 +549,14 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda",
                         choices=["cpu", "cuda"],
                         help="Device to run inference on")
-    parser.add_argument("--conf-threshold", type=float, default=0.5,
-                        help="Confidence threshold for predictions")
-    parser.add_argument("--input-size", type=int, default=640,
-                        help="Input image size")
+    parser.add_argument("--conf-threshold", type=float, default=None,
+                        help="Confidence threshold (default: from config.yaml)")
+    parser.add_argument("--input-size", type=int, default=None,
+                        help="Input image size (default: from config.yaml)")
+    parser.add_argument("--top-k", type=int, default=30,
+                        help="Max boxes per image after NMS (visual clutter cap)")
+    parser.add_argument("--min-area-frac", type=float, default=0.001,
+                        help="Drop boxes smaller than this fraction of image area")
     parser.add_argument("--show-gt", action="store_true",
                         help="Also draw ground truth boxes (requires --ann-file)")
     parser.add_argument("--ann-file", type=str, default=None,
@@ -457,8 +565,8 @@ def parse_args():
                         help="Path to save predictions JSON")
     parser.add_argument("--max-images", type=int, default=None,
                         help="Limit number of images to process")
-    parser.add_argument("--num-classes", type=int, default=10,
-                        help="Number of classes in the model")
+    parser.add_argument("--num-classes", type=int, default=None,
+                        help="Number of classes (default: from config.yaml)")
     return parser.parse_args()
 
 
@@ -467,29 +575,79 @@ def load_gt_annotations(ann_file: Path) -> dict:
         return json.load(f)
 
 
+def build_gt_index(ann_data: dict) -> dict:
+    """Pre-build index: image_id -> list of annotations for fast lookup."""
+    index = {}
+    for ann in ann_data.get("annotations", []):
+        img_id = ann["image_id"]
+        if img_id not in index:
+            index[img_id] = []
+        index[img_id].append(ann)
+    return index
+
+
+def build_img_name_to_id(ann_data: dict) -> dict:
+    """Pre-build index: file_name -> image_id."""
+    return {img["file_name"]: img["id"] for img in ann_data.get("images", [])}
+
+
+def _build_cat_id_to_cls_idx(
+    ann_data: dict, class_names: list[str]
+) -> dict[int, int]:
+    """Map category_id (COCO, có thể không liền mạch) → 0-based class index theo class_names.
+
+    Ưu tiên ghép qua TÊN category — robust với mọi COCO scheme (1-based, 0-based,
+    hoặc giữ ID 17/18/.. như COCO 2017).
+    """
+    name_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    mapping: dict[int, int] = {}
+    for cat in ann_data.get("categories", []):
+        cat_id = cat.get("id")
+        name = cat.get("name")
+        if cat_id is None or name is None:
+            continue
+        if name in name_to_idx:
+            mapping[int(cat_id)] = name_to_idx[name]
+    return mapping
+
+
 def get_gt_for_image(
     ann_data: dict,
     image_file_name: str,
     class_names: list[str],
+    img_name_to_id: dict | None = None,
+    gt_index: dict | None = None,
+    cat_mapping: dict | None = None,
 ) -> tuple[list, list]:
-    """Extract GT boxes/labels for a given image file name."""
-    # Find image id
-    img_id = None
-    for img in ann_data["images"]:
-        if img["file_name"] == image_file_name:
-            img_id = img["id"]
-            break
-    if img_id is None:
-        return [], []
+    """Extract GT boxes/labels for a given image file name.
 
-    # Map category_id -> class index (category_id in COCO starts at 1)
+    Uses pre-built indexes for O(1) lookup instead of O(n) loops.
+    """
+    # Fast lookup using pre-built index
+    if img_name_to_id is not None and gt_index is not None and cat_mapping is not None:
+        img_id = img_name_to_id.get(image_file_name)
+        if img_id is None:
+            return [], []
+        anns = gt_index.get(img_id, [])
+    else:
+        # Fallback: slow lookup
+        img_id = None
+        for img in ann_data.get("images", []):
+            if img["file_name"] == image_file_name:
+                img_id = img["id"]
+                break
+        if img_id is None:
+            return [], []
+        anns = ann_data.get("annotations", [])
+        anns = [a for a in anns if a["image_id"] == img_id]
+        if cat_mapping is None:
+            cat_mapping = _build_cat_id_to_cls_idx(ann_data, class_names)
+
     boxes, labels = [], []
-    for ann in ann_data["annotations"]:
-        if ann["image_id"] != img_id:
-            continue
-        cat_id = ann["category_id"]  # 1-based
-        cls_idx = cat_id - 1          # 0-based index
-        if cls_idx < 0 or cls_idx >= len(class_names):
+    for ann in anns:
+        cat_id = int(ann["category_id"])
+        cls_idx = (cat_mapping or {}).get(cat_id)
+        if cls_idx is None or cls_idx < 0 or cls_idx >= len(class_names):
             continue
         x, y, w, h = ann["bbox"]
         boxes.append([float(x), float(y), float(w), float(h)])
@@ -501,22 +659,48 @@ def get_gt_for_image(
 def main():
     args = parse_args()
 
+    # Load config from yaml
+    config = load_model_config(args.model)
+    model_config = config.get("model", {})
+    inference_config = config.get("inference", {})
+    training_config = config.get("training", {})
+
+    # Use config values as defaults, CLI args override
+    num_classes = args.num_classes if args.num_classes is not None else model_config.get("num_classes", 10)
+    input_size = args.input_size if args.input_size is not None else model_config.get("image_size", 640)
+    conf_threshold = args.conf_threshold if args.conf_threshold is not None else inference_config.get("conf_threshold", 0.5)
+
     device = args.device if torch.cuda.is_available() else "cpu"
     print(f"[Info] Using device: {device}")
 
-    # Load class names
-    class_names = get_class_names()
-    print(f"[Info] Classes: {class_names}")
+    # Load class names from config or fallback
+    if "classes" in model_config:
+        class_names = model_config["classes"]
+        # Remove __background__ if present (for faster_rcnn indexing)
+        if class_names and class_names[0] == "__background__":
+            class_names = class_names[1:]
+    else:
+        class_names = get_class_names()
+    print(f"[Info] Classes ({len(class_names)}): {class_names}")
+    print(f"[Info] Config: input_size={input_size}, conf_threshold={conf_threshold}, num_classes={num_classes}")
 
     # Load model
     print(f"[Info] Loading {args.model} from {args.weights}...")
-    model = load_model(args.model, args.weights, device, args.num_classes)
+    model = load_model(args.model, args.weights, device, num_classes)
 
     # Load GT annotations if requested
     gt_data = None
+    gt_index = None
+    img_name_to_id = None
+    cat_mapping = None
     if args.show_gt and args.ann_file:
         print(f"[Info] Loading GT annotations from {args.ann_file}")
         gt_data = load_gt_annotations(Path(args.ann_file))
+        # Pre-build indexes for O(1) lookup
+        gt_index = build_gt_index(gt_data)
+        img_name_to_id = build_img_name_to_id(gt_data)
+        cat_mapping = _build_cat_id_to_cls_idx(gt_data, class_names)
+        print(f"[Info] Built GT index with {len(gt_index)} images")
 
     # Find test images
     image_dir = Path(args.data)
@@ -546,8 +730,17 @@ def main():
         # Run prediction
         boxes, labels, scores = run_predictions(
             model, args.model, img_path, device,
-            input_size=args.input_size, conf_threshold=args.conf_threshold,
+            input_size=input_size, conf_threshold=conf_threshold,
+            top_k=args.top_k, min_area_frac=args.min_area_frac,
         )
+
+        # Sort by score descending — strongest detections drawn last, so their
+        # labels stay readable on top of any weaker overlapping boxes.
+        if scores:
+            order = sorted(range(len(scores)), key=lambda i: scores[i])
+            boxes = [boxes[i] for i in order]
+            labels = [labels[i] for i in order]
+            scores = [scores[i] for i in order]
 
         # Load original image (no resize, no padding) for drawing
         orig_img = Image.open(img_path).convert("RGB")
@@ -562,7 +755,8 @@ def main():
         # Draw GT if available
         if gt_data is not None:
             gt_boxes, gt_labels = get_gt_for_image(
-                gt_data, img_path.name, class_names
+                gt_data, img_path.name, class_names,
+                img_name_to_id, gt_index, cat_mapping
             )
             # Draw GT with dashed lines (simulate with thinner boxes, distinct color)
             # We reuse draw_boxes but skip scores and use a "GT" label

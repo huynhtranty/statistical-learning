@@ -1,16 +1,43 @@
-# Cấu hình kiến trúc YOLO
-# Chỉ chứa thông số model cơ bản. Cấu hình dataset/split sẽ thêm sau.
+# Cấu hình huấn luyện YOLO
 
 model:
   model_name: yolo_custom
   num_classes: 10           # Số lớp vật thể: cat, dog, horse, cow, bird, sheep, elephant, bear, zebra, giraffe
-  image_size: 640
-  base_channels: 32          # Số kênh cơ sở (tăng để có model lớn hơn)
-  num_anchors: 3             # Số anchor mỗi vị trí grid
+  image_size: 640           # Kích thước ảnh input (320, 416, 512, 640, 768, 1024)
+  base_channels: 32         # Số kênh cơ sở (tăng để có model lớn hơn)
+  num_anchors: 3            # Số anchor mỗi vị trí grid
+  # Anchors chuẩn hóa theo image_size (w, h) cho 3 scale P3/P4/P5.
+  # Có thể cập nhật bằng scripts/cluster_yolo_anchors.py.
+  anchors:
+    - [[0.0156, 0.0203], [0.0250, 0.0469], [0.0516, 0.0359]]
+    - [[0.0469, 0.0953], [0.0969, 0.0703], [0.0922, 0.1859]]
+    - [[0.1813, 0.1406], [0.2438, 0.3094], [0.5828, 0.5094]]
   classes: ["cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
 
-# TODO: Định nghĩa anchor sizes cụ thể cho từng scale.
-# TODO: Thêm cấu hình NMS (iou_threshold, confidence_threshold).
-# TODO: Thêm cấu hình optimizer và scheduler khi triển khai training.
-# TODO: Thêm cấu hình data augmentation (mosaic, mixup, v.v.).
-# TODO: Thêm cấu hình dataset.
+training:
+  epochs: 50
+  batch_size: 8
+  num_workers: 4
+  lr: 0.0005               # Learning rate fine-tune cho pretrained backbone
+  warmup_epochs: 3         # Warmup trước khi vào cosine schedule
+  min_lr_ratio: 0.05       # LR tối thiểu = lr * min_lr_ratio
+  grad_clip_norm: 10.0     # Clip gradient để ổn định hơn
+  weight_decay: 0.0001      # Weight decay cho optimizer
+  use_coco_eval: true       # Tính thêm mAP chuẩn COCO ở val mỗi epoch
+  augment_enabled: true
+  # Augment config truyền xuống CocoDetection.
+  augment:
+    flip_prob: 0.5
+    affine_prob: 0.5
+    scale_min: 0.85
+    scale_max: 1.15
+    translate_frac: 0.10
+    brightness: 0.25
+    contrast: 0.25
+    saturation: 0.25
+    hue_shift: 12
+    min_box_size: 2.0
+
+inference:
+  conf_threshold: 0.25      # Confidence threshold (0.0 - 1.0)
+  iou_threshold: 0.45       # IoU threshold cho NMS (0.0 - 1.0)

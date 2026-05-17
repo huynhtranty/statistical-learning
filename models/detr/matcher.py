@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from scipy.optimize import linear_sum_assignment
+import numpy as np
 
 import sys
 from pathlib import Path
@@ -90,11 +91,14 @@ class HungarianMatcher(nn.Module):
         # L1 bounding box cost
         cost_bbox = torch.cdist(pred_boxes, tgt_boxes, p=1)
 
-        # GIoU cost
-        cost_giou = -generalized_box_iou(
+        # GIoU cost - CLAMP KET QUA de tranh NaN/Inf
+        giou_matrix = generalized_box_iou(
             cxcywh_to_xyxy(pred_boxes),
             cxcywh_to_xyxy(tgt_boxes),
         )
+        # GIoU trong khoang [-1, 1], clamp them mot lan nua
+        giou_matrix = giou_matrix.clamp(min=-1.0, max=1.0)
+        cost_giou = -giou_matrix
 
         # Tổng hợp cost matrix
         cost_matrix = (
@@ -103,6 +107,9 @@ class HungarianMatcher(nn.Module):
             + self.cost_giou * cost_giou
         )
 
+        # Replace NaN/Inf with large finite values early to prevent propagation
+        cost_matrix = torch.nan_to_num(cost_matrix, nan=1e6, posinf=1e6, neginf=-1e6)
+
         # Reshape lại theo batch
         cost_matrix = cost_matrix.view(batch_size, num_queries, -1).cpu()
 
@@ -110,8 +117,26 @@ class HungarianMatcher(nn.Module):
         sizes = [len(t["boxes"]) for t in targets]
         indices = []
         for i, c in enumerate(cost_matrix.split(sizes, dim=-1)):
-            c_i = c[i]  # (num_queries, num_targets_i)
-            pred_idx, tgt_idx = linear_sum_assignment(c_i.numpy())
+            c_i = c[i].contiguous()  # (num_queries, num_targets_i)
+
+            # Handle empty targets: no objects in this image
+            if sizes[i] == 0:
+                indices.append((
+                    torch.tensor([], dtype=torch.long),
+                    torch.tensor([], dtype=torch.long),
+                ))
+                continue
+
+            # Replace NaN/Inf with large finite values to prevent Hungarian solver crash
+            c_i = torch.nan_to_num(c_i, nan=1e6, posinf=1e6, neginf=-1e6)
+
+            # Final validation: ensure matrix contains only valid finite values
+            c_i_np = c_i.cpu().numpy()
+            if not np.isfinite(c_i_np).all():
+                invalid_mask = ~np.isfinite(c_i_np)
+                c_i_np[invalid_mask] = 1e6
+
+            pred_idx, tgt_idx = linear_sum_assignment(c_i_np)
             indices.append((
                 torch.as_tensor(pred_idx, dtype=torch.long),
                 torch.as_tensor(tgt_idx, dtype=torch.long),

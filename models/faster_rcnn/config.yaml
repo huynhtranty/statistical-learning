@@ -3,14 +3,23 @@
 
 model:
   model_name: fasterrcnn_resnet50_fpn
-  num_classes: 11           # 10 lớp vật thể + 1 background
+  num_classes: 10            # Số lớp foreground (background = 0 được thêm tự động)
   image_size: 640
   pretrained_backbone: true
   trainable_backbone_layers: 3
   classes: ["__background__", "cat", "dog", "horse", "cow", "bird", "sheep", "elephant", "bear", "zebra", "giraffe"]
 
+inference:
+  conf_threshold: 0.5       # Confidence threshold cho predictions (0.0 - 1.0)
+  iou_threshold: 0.5        # IoU threshold cho NMS (0.0 - 1.0)
+
+training:
+  batch_size: 4
+  num_workers: 4
+  epochs: 50
+  lr: 0.001                 # Learning rate
+  weight_decay: 0.0001      # Weight decay cho optimizer
+
 # TODO: Thêm cấu hình anchor sizes/aspect ratios.
 # TODO: Thêm cấu hình RPN (nms_thresh, pre/post nms top_n, v.v.).
 # TODO: Thêm cấu hình ROI head (nms_thresh, score_thresh, v.v.).
-# TODO: Thêm cấu hình optimizer và scheduler khi triển khai training.
-# TODO: Thêm cấu hình dataset và data augmentation.

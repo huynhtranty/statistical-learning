@@ -6,6 +6,7 @@ tensorboard>=2.15.0
 # Object detection model libraries
 ultralytics>=8.1.0
 transformers>=4.38.0
+timm>=0.9.12
 
 # COCO evaluation
 pycocotools>=2.0.7

@@ -28,6 +28,7 @@ from tqdm import tqdm
 
 import torch
 import torch.optim as optim
+import torchvision.ops
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -36,6 +37,23 @@ from models.detr.model import build_detr
 from models.utils.coco_dataset import get_coco_dataloaders, get_class_names, CocoDetection, collate_fn
 from models.utils.losses import SetCriterion
 from models.detr.matcher import HungarianMatcher
+from models.utils.detection_metrics import evaluate_detection_metrics
+
+
+def _is_finite_tensor_dict(tensor_dict: dict[str, torch.Tensor]) -> bool:
+    """Return True when all tensor values are finite."""
+    for value in tensor_dict.values():
+        if torch.is_tensor(value) and not torch.isfinite(value).all():
+            return False
+    return True
+
+
+def _has_non_finite_params(model: torch.nn.Module) -> bool:
+    """Detect NaN/Inf in model parameters."""
+    for param in model.parameters():
+        if not torch.isfinite(param).all():
+            return True
+    return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,7 +67,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=50,
                     help="Số epochs (mặc định: 50)")
     p.add_argument("--lr", type=float, default=1e-4,
-                    help="Learning rate (mặc định: 1e-4)")
+                    help="Learning rate cho transformer + head (mặc định: 1e-4)")
+    p.add_argument("--lr_backbone", type=float, default=1e-5,
+                    help="Learning rate cho backbone (mặc định: 1e-5, theo paper DETR)")
     p.add_argument("--num_queries", type=int, default=100,
                     help="Số object queries (mặc định: 100)")
     p.add_argument("--num_workers", type=int, default=4,
@@ -62,10 +82,14 @@ def parse_args() -> argparse.Namespace:
                     help="Đường dẫn checkpoint để resume training")
     p.add_argument("--augment", action="store_true",
                     help="Sử dụng data augmentation (RandomHorizontalFlip, ColorJitter, RandomRotation)")
-    p.add_argument("--aux_loss", action="store_true", default=True,
-                    help="Sử dụng auxiliary loss từ mỗi decoder layer")
+    p.add_argument("--aux_loss", action=argparse.BooleanOptionalAction, default=True,
+                    help="Bật/tắt auxiliary loss từ mỗi decoder layer")
     p.add_argument("--output", type=str, default=None,
                     help="Đường dẫn lưu checkpoint cuối cùng")
+    p.add_argument("--conf_threshold", type=float, default=0.25,
+                    help="Confidence threshold cho evaluation mAP")
+    p.add_argument("--iou_threshold", type=float, default=0.5,
+                    help="IoU threshold cho mAP")
     return p.parse_args()
 
 
@@ -113,39 +137,76 @@ def build_dataloaders(args: argparse.Namespace, classes: list[str]):
     return train_loader, val_loader
 
 
-def prepare_targets(targets: list[dict], device: torch.device) -> list[dict]:
-    """Chuẩn bị targets cho DETR training."""
+def prepare_targets(targets: list[dict], device: torch.device, img_size: int) -> list[dict]:
+    """Chuyển targets từ dataset format (xyxy pixel) sang DETR format
+    (cxcywh chuẩn hoá [0,1]) và move sang device."""
     prepared = []
     for target in targets:
+        boxes = target["boxes"].to(device).float()
+        if boxes.numel() > 0:
+            x1, y1, x2, y2 = boxes.unbind(-1)
+            cx = (x1 + x2) * 0.5 / img_size
+            cy = (y1 + y2) * 0.5 / img_size
+            bw = (x2 - x1) / img_size
+            bh = (y2 - y1) / img_size
+            boxes = torch.stack((cx, cy, bw, bh), dim=-1).clamp(0.0, 1.0)
         prepared.append({
             "labels": target["labels"].to(device),
-            "boxes": target["boxes"].to(device),
+            "boxes": boxes,
         })
     return prepared
 
 
-def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, epoch, writer, aux_loss=True):
+def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, epoch, writer, img_size, aux_loss=True):
     """Train một epoch."""
     model.train()
     total_loss = 0
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
+    skipped_batches = 0
     for batch_idx, (images, targets) in enumerate(pbar):
         images = images.to(device)
-        targets = prepare_targets(targets, device)
+        targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite outputs at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
         indices = matcher(outputs, targets)
         loss_dict = criterion(outputs, targets, indices)
+        if not _is_finite_tensor_dict(loss_dict):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite loss terms at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
         weight_dict = criterion.weight_dict
         losses = sum(weight_dict.get(k, 0) * v for k, v in loss_dict.items())
+        if not torch.isfinite(losses):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite total loss at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         losses.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+        
+        # Clipping nhieu muc de dam bao gradient on dinh
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        if not torch.isfinite(grad_norm):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite grad norm at epoch={epoch}, batch={batch_idx}; skipping optimizer step.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
         optimizer.step()
+        if _has_non_finite_params(model):
+            raise RuntimeError(
+                f"[DETR] Model parameters became NaN/Inf after optimizer step at epoch={epoch}, batch={batch_idx}."
+            )
 
         total_loss += losses.item()
         pbar.set_postfix({"loss": f"{losses.item():.4f}"})
@@ -156,29 +217,111 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
             for k, v in loss_dict.items():
                 writer.add_scalar(f"train/{k}", v.item(), global_step)
 
-    return total_loss / len(dataloader)
+    valid_batches = max(1, len(dataloader) - skipped_batches)
+    if skipped_batches > 0:
+        print(f"[DETR][Warn] Skipped {skipped_batches}/{len(dataloader)} batches due to non-finite values.")
+    return total_loss / valid_batches
 
 
 @torch.no_grad
-def validate(model, dataloader, matcher, criterion, device):
+def validate(model, dataloader, matcher, criterion, device, img_size):
     """Validate model."""
     model.eval()
     total_loss = 0
+    valid_batches = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
         images = images.to(device)
-        targets = prepare_targets(targets, device)
+        targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            continue
         indices = matcher(outputs, targets)
         loss_dict = criterion(outputs, targets, indices)
+        if not _is_finite_tensor_dict(loss_dict):
+            continue
 
         weight_dict = criterion.weight_dict
         losses = sum(weight_dict.get(k, 0) * v for k, v in loss_dict.items())
+        if not torch.isfinite(losses):
+            continue
 
         total_loss += losses.item()
+        valid_batches += 1
+    return total_loss / max(1, valid_batches)
 
-    return total_loss / len(dataloader)
+
+@torch.no_grad()
+def evaluate_model(model, dataloader, device, num_classes: int, img_size: int, conf_threshold: float, iou_threshold: float):
+    model.eval()
+    all_predictions: list[list[dict]] = []
+    all_targets: list[dict] = []
+
+    for images, targets in tqdm(dataloader, desc="Evaluating mAP"):
+        images = images.to(device)
+        outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            # Keep list lengths aligned with targets count.
+            for target in targets:
+                all_predictions.append([])
+                all_targets.append({
+                    "boxes": target["boxes"].detach().cpu().tolist(),
+                    "labels": target["labels"].detach().cpu().tolist(),
+                })
+            continue
+
+        pred_logits = outputs["pred_logits"]  # (B, Q, C+1)
+        pred_boxes = outputs["pred_boxes"]    # (B, Q, 4) normalized cxcywh
+        probas = pred_logits.softmax(-1)
+
+        for b_idx, target in enumerate(targets):
+            boxes_norm = pred_boxes[b_idx].detach().cpu()
+            probs = probas[b_idx].detach().cpu()
+
+            scores, labels = probs[:, :-1].max(dim=-1)
+            keep = scores >= conf_threshold
+            boxes_norm = boxes_norm[keep]
+            scores = scores[keep]
+            labels = labels[keep]
+
+            pred_list: list[dict] = []
+            if boxes_norm.numel() > 0:
+                cx = boxes_norm[:, 0] * img_size
+                cy = boxes_norm[:, 1] * img_size
+                bw = boxes_norm[:, 2] * img_size
+                bh = boxes_norm[:, 3] * img_size
+                x1 = (cx - bw / 2.0).clamp(0.0, float(img_size))
+                y1 = (cy - bh / 2.0).clamp(0.0, float(img_size))
+                x2 = (cx + bw / 2.0).clamp(0.0, float(img_size))
+                y2 = (cy + bh / 2.0).clamp(0.0, float(img_size))
+                boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=1)
+
+                valid = (boxes_xyxy[:, 2] > boxes_xyxy[:, 0]) & (boxes_xyxy[:, 3] > boxes_xyxy[:, 1])
+                boxes_xyxy = boxes_xyxy[valid]
+                scores = scores[valid]
+                labels = labels[valid]
+
+                if boxes_xyxy.numel() > 0:
+                    keep_idx = torchvision.ops.batched_nms(boxes_xyxy, scores, labels, iou_threshold)
+                    for idx in keep_idx.tolist():
+                        lb = int(labels[idx].item())
+                        if lb < 0 or lb >= num_classes:
+                            continue
+                        bx = boxes_xyxy[idx].tolist()
+                        pred_list.append({
+                            "bbox": [float(bx[0]), float(bx[1]), float(bx[2]), float(bx[3])],
+                            "score": float(scores[idx].item()),
+                            "class": lb,
+                        })
+
+            all_predictions.append(pred_list)
+            all_targets.append({
+                "boxes": target["boxes"].detach().cpu().tolist(),
+                "labels": target["labels"].detach().cpu().tolist(),
+            })
+
+    return evaluate_detection_metrics(all_predictions, all_targets, num_classes, iou_threshold=iou_threshold)
 
 
 def main():
@@ -192,7 +335,14 @@ def main():
     print(f"[DETR] Using {args.num_queries} object queries")
     print(f"[DETR] Auxiliary loss: {args.aux_loss}")
 
-    model = build_detr(num_classes=num_classes, num_queries=args.num_queries)
+    # Mặc định dùng HuggingFace facebook/detr-resnet-50 COCO-pretrained,
+    # chỉ thay class head cho num_classes của ta — đồng bộ với Faster R-CNN
+    # cũng COCO-pretrained và YOLO ImageNet-pretrained backbone.
+    model = build_detr(
+        num_classes=num_classes,
+        num_queries=args.num_queries,
+        pretrained_coco=True,
+    )
     model.to(device)
 
     checkpoint_dir = Path(args.base_dir) / "checkpoints"
@@ -213,23 +363,58 @@ def main():
         num_classes=num_classes,
         matcher=matcher,
         weight_dict={"loss_ce": 1, "loss_bbox": 5, "loss_giou": 2},
+        eos_coef=0.5,  # Tang weight cho "no object" class (mac dinh 0.1) de xu ly class imbalance
         aux_loss=args.aux_loss,
     )
     criterion.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Theo paper DETR: backbone dùng LR thấp hơn 10× transformer/head.
+    # Khi pretrained_coco=True, backbone = HF DetrConvEncoder/ResNet đã train chuẩn,
+    # chỉ cần fine-tune nhẹ — LR cao sẽ phá weights và gây gradient explosion → NaN.
+    # Phân group qua tên parameter: HF wrapper => "model.model.backbone.*", custom DETR => "backbone.*".
+    backbone_params, other_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if "backbone" in name:
+            backbone_params.append(p)
+        else:
+            other_params.append(p)
+    print(f"[DETR] Param groups: backbone={len(backbone_params)} tensors @ lr={args.lr_backbone}, "
+          f"transformer+head={len(other_params)} tensors @ lr={args.lr}")
+    optimizer = optim.AdamW(
+        [
+            {"params": backbone_params, "lr": args.lr_backbone},
+            {"params": other_params, "lr": args.lr},
+        ],
+        lr=args.lr,
+        weight_decay=1e-4,
+    )
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
     start_epoch = 0
     best_val_loss = float("inf")
 
     if args.resume:
-        print(f"[DETR] Resuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device)
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"[DETR] Resume checkpoint không tồn tại: {resume_path}")
+        print(f"[DETR] Resuming from checkpoint: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint.get("epoch", 0) + 1
-        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            for _ in range(checkpoint.get("epoch", -1) + 1):
+                scheduler.step()
+        start_epoch = checkpoint.get("epoch", -1) + 1
+        best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        print(f"[DETR] Resumed at epoch {start_epoch}, "
+              f"best val_loss so far={best_val_loss:.4f}, "
+              f"current lr={scheduler.get_last_lr()[0]:.6f}")
+        if _has_non_finite_params(model):
+            raise ValueError("[DETR] Resume checkpoint contains NaN/Inf parameters. Please resume from a clean checkpoint.")
 
     print(f"[DETR] Starting training for {args.epochs} epochs...")
     print(f"[DETR] Device: {device}")
@@ -239,17 +424,33 @@ def main():
 
     for epoch in range(start_epoch, args.epochs):
         train_loss = train_one_epoch(
-            model, train_loader, matcher, criterion, optimizer, device, epoch, writer, args.aux_loss
+            model, train_loader, matcher, criterion, optimizer, device, epoch, writer,
+            args.img_size, args.aux_loss,
         )
-        val_loss = validate(model, val_loader, matcher, criterion, device)
+        val_loss = validate(model, val_loader, matcher, criterion, device, args.img_size)
+        metrics = evaluate_model(
+            model,
+            val_loader,
+            device=device,
+            num_classes=num_classes,
+            img_size=args.img_size,
+            conf_threshold=args.conf_threshold,
+            iou_threshold=args.iou_threshold,
+        )
 
         scheduler.step()
 
         writer.add_scalar("epoch/train_loss", train_loss, epoch)
         writer.add_scalar("epoch/val_loss", val_loss, epoch)
+        writer.add_scalar("epoch/mAP", metrics["mAP"], epoch)
+        writer.add_scalar("epoch/mean_iou", metrics["mean_iou"], epoch)
         writer.add_scalar("epoch/lr", scheduler.get_last_lr()[0], epoch)
 
-        print(f"[DETR] Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, lr={scheduler.get_last_lr()[0]:.6f}")
+        print(
+            f"[DETR] Epoch {epoch}: train_loss={train_loss:.4f}, "
+            f"val_loss={val_loss:.4f}, mAP={metrics['mAP']:.4f}, "
+            f"mean_iou={metrics['mean_iou']:.4f}, lr={scheduler.get_last_lr()[0]:.6f}"
+        )
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -258,11 +459,12 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
                 "num_queries": args.num_queries,
             }, best_checkpoint_path)
-            print(f"[DETR] Saved best model to {best_checkpoint_path}")
+            print(f"[DETR] Saved best model (val_loss={best_val_loss:.4f}) to {best_checkpoint_path}")
 
         if args.output:
             final_path = Path(args.output)
@@ -270,6 +472,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "classes": classes,
                 "num_queries": args.num_queries,
