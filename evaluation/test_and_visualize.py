@@ -183,7 +183,22 @@ def load_model(model_type: str, weights_path: str, device: str, num_classes: int
         # HF wrapper: cấu trúc tự load từ HF hub khi build, sau đó load checkpoint của ta.
         model = build_detr(num_classes=num_classes, pretrained_coco=True)
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = checkpoint["model_state_dict"]
+
+        # Guard: báo lỗi rõ ràng nếu checkpoint đã diverge (NaN/Inf) thay vì chạy ra "không detect gì".
+        bad_keys = []
+        for key, value in state_dict.items():
+            if torch.is_tensor(value) and (not torch.isfinite(value).all()):
+                bad_keys.append(key)
+                if len(bad_keys) >= 5:
+                    break
+        if bad_keys:
+            raise ValueError(
+                "DETR checkpoint contains NaN/Inf parameters; inference would be invalid. "
+                f"First invalid tensors: {bad_keys}. Please retrain or use a clean checkpoint."
+            )
+
+        model.load_state_dict(state_dict)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")

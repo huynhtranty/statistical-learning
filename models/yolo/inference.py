@@ -22,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import yaml
 from models.yolo.model import build_yolo
-from models.utils.box_ops import cxcywh_to_xyxy, box_iou
+from models.utils.box_ops import box_iou
+from models.yolo.train import decode_predictions as train_decode_predictions
+from models.yolo.train import nms as train_nms
 
 
 def load_config(config_path: str | None = None) -> dict:
@@ -150,8 +152,46 @@ def postprocess_predictions(
     
     Cần implement theo output format của model.
     """
-    # TODO: Implement theo output format cụ thể của model
-    raise NotImplementedError("Cần implement postprocess theo model output format")
+    if not isinstance(outputs, list):
+        outputs = [outputs]
+
+    decoded = train_decode_predictions(
+        outputs,
+        conf_threshold=conf_threshold,
+        num_classes=num_classes,
+        img_size=img_size,
+    )
+    if not decoded:
+        return []
+
+    preds = decoded[0]
+    preds = train_nms(preds, iou_threshold=iou_threshold)
+
+    orig_h, orig_w = orig_shape
+    results: list[dict] = []
+    for pred in preds:
+        x1, y1, x2, y2 = pred["bbox"]
+        # Reverse letterbox-like scale used in preprocess_image.
+        x1 = x1 / scale
+        y1 = y1 / scale
+        x2 = x2 / scale
+        y2 = y2 / scale
+
+        x1 = float(np.clip(x1, 0.0, float(orig_w)))
+        y1 = float(np.clip(y1, 0.0, float(orig_h)))
+        x2 = float(np.clip(x2, 0.0, float(orig_w)))
+        y2 = float(np.clip(y2, 0.0, float(orig_h)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        results.append(
+            {
+                "bbox": [x1, y1, x2, y2],
+                "score": float(pred["score"]),
+                "class": int(pred["class"]),
+            }
+        )
+    return results
 
 
 def parse_args() -> argparse.Namespace:
@@ -212,18 +252,46 @@ def main():
     
     print(f"[YOLO] Raw outputs shape: {[o.shape for o in outputs]}")
 
-    # TODO: Postprocess và apply NMS
-    # results = postprocess_predictions(outputs, img_size, orig_shape, scale, ...)
-    
-    # Placeholder output
-    print(f"[YOLO] Inference completed. Postprocessing cần được implement.")
+    results = postprocess_predictions(
+        outputs=outputs,
+        img_size=img_size,
+        orig_shape=orig_shape,
+        scale=scale,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+        num_classes=num_classes,
+    )
+
+    print(f"[YOLO] Inference completed. {len(results)} detections.")
+
+    # Draw boxes on original image.
+    vis_img = orig_img.copy()
+    for det in results:
+        x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
+        cls_id = det["class"]
+        score = det["score"]
+        label = classes[cls_id] if 0 <= cls_id < len(classes) else f"class_{cls_id}"
+
+        cv2.rectangle(vis_img, (x1, y1), (x2, y2), (67, 142, 219), 2)
+        cv2.putText(
+            vis_img,
+            f"{label} {score:.2f}",
+            (x1, max(18, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
     # Save visualization (placeholder)
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # cv2.imwrite(str(output_path), orig_img)
+        cv2.imwrite(str(output_path), cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
         print(f"[YOLO] Output saved to {output_path}")
+    else:
+        print("[YOLO] No --output provided, visualization was not saved.")
 
 
 if __name__ == "__main__":

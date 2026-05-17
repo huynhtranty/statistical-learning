@@ -40,6 +40,22 @@ from models.detr.matcher import HungarianMatcher
 from models.utils.detection_metrics import evaluate_detection_metrics
 
 
+def _is_finite_tensor_dict(tensor_dict: dict[str, torch.Tensor]) -> bool:
+    """Return True when all tensor values are finite."""
+    for value in tensor_dict.values():
+        if torch.is_tensor(value) and not torch.isfinite(value).all():
+            return False
+    return True
+
+
+def _has_non_finite_params(model: torch.nn.Module) -> bool:
+    """Detect NaN/Inf in model parameters."""
+    for param in model.parameters():
+        if not torch.isfinite(param).all():
+            return True
+    return False
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train DETR object detection model.")
     p.add_argument("--data_root", type=str, default="data",
@@ -145,22 +161,47 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
     total_loss = 0
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
+    skipped_batches = 0
     for batch_idx, (images, targets) in enumerate(pbar):
         images = images.to(device)
         targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite outputs at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
         indices = matcher(outputs, targets)
         loss_dict = criterion(outputs, targets, indices)
+        if not _is_finite_tensor_dict(loss_dict):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite loss terms at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
         weight_dict = criterion.weight_dict
         losses = sum(weight_dict.get(k, 0) * v for k, v in loss_dict.items())
+        if not torch.isfinite(losses):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite total loss at epoch={epoch}, batch={batch_idx}; skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         losses.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+        if not torch.isfinite(grad_norm):
+            skipped_batches += 1
+            print(f"[DETR][Warn] Non-finite grad norm at epoch={epoch}, batch={batch_idx}; skipping optimizer step.")
+            optimizer.zero_grad(set_to_none=True)
+            continue
         optimizer.step()
+        if _has_non_finite_params(model):
+            raise RuntimeError(
+                f"[DETR] Model parameters became NaN/Inf after optimizer step at epoch={epoch}, batch={batch_idx}."
+            )
 
         total_loss += losses.item()
         pbar.set_postfix({"loss": f"{losses.item():.4f}"})
@@ -171,7 +212,10 @@ def train_one_epoch(model, dataloader, matcher, criterion, optimizer, device, ep
             for k, v in loss_dict.items():
                 writer.add_scalar(f"train/{k}", v.item(), global_step)
 
-    return total_loss / len(dataloader)
+    valid_batches = max(1, len(dataloader) - skipped_batches)
+    if skipped_batches > 0:
+        print(f"[DETR][Warn] Skipped {skipped_batches}/{len(dataloader)} batches due to non-finite values.")
+    return total_loss / valid_batches
 
 
 @torch.no_grad
@@ -179,21 +223,28 @@ def validate(model, dataloader, matcher, criterion, device, img_size):
     """Validate model."""
     model.eval()
     total_loss = 0
+    valid_batches = 0
 
     for images, targets in tqdm(dataloader, desc="Validating"):
         images = images.to(device)
         targets = prepare_targets(targets, device, img_size)
 
         outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            continue
         indices = matcher(outputs, targets)
         loss_dict = criterion(outputs, targets, indices)
+        if not _is_finite_tensor_dict(loss_dict):
+            continue
 
         weight_dict = criterion.weight_dict
         losses = sum(weight_dict.get(k, 0) * v for k, v in loss_dict.items())
+        if not torch.isfinite(losses):
+            continue
 
         total_loss += losses.item()
-
-    return total_loss / len(dataloader)
+        valid_batches += 1
+    return total_loss / max(1, valid_batches)
 
 
 @torch.no_grad()
@@ -205,6 +256,15 @@ def evaluate_model(model, dataloader, device, num_classes: int, img_size: int, c
     for images, targets in tqdm(dataloader, desc="Evaluating mAP"):
         images = images.to(device)
         outputs = model(images)
+        if not _is_finite_tensor_dict(outputs):
+            # Keep list lengths aligned with targets count.
+            for target in targets:
+                all_predictions.append([])
+                all_targets.append({
+                    "boxes": target["boxes"].detach().cpu().tolist(),
+                    "labels": target["labels"].detach().cpu().tolist(),
+                })
+            continue
 
         pred_logits = outputs["pred_logits"]  # (B, Q, C+1)
         pred_boxes = outputs["pred_boxes"]    # (B, Q, 4) normalized cxcywh
@@ -326,6 +386,8 @@ def main():
         print(f"[DETR] Resumed at epoch {start_epoch}, "
               f"best val_loss so far={best_val_loss:.4f}, "
               f"current lr={scheduler.get_last_lr()[0]:.6f}")
+        if _has_non_finite_params(model):
+            raise ValueError("[DETR] Resume checkpoint contains NaN/Inf parameters. Please resume from a clean checkpoint.")
 
     print(f"[DETR] Starting training for {args.epochs} epochs...")
     print(f"[DETR] Device: {device}")
